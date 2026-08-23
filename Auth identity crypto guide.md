@@ -339,30 +339,6 @@ CLIENT                                             SERVER
   │◄──────────────────── ChangeCipherSpec + Finished│
   │  ══════ symmetric-encrypted application data ═══ │
 ```
-sequenceDiagram
-    participant C as CLIENT
-    participant S as SERVER
-
-    C->>S: ClientHello
-    Note right of S: TLS versions<br/>Cipher options<br/>Client random number
-
-    S-->>C: ServerHello
-    Note right of S: Chosen TLS version<br/>Chosen cipher<br/>Server random number
-
-    S-->>C: Certificate
-    Note right of S: Leaf certificate + certificate chain<br/>Contains server public key
-
-    S-->>C: ServerHelloDone
-
-    Note over C: Client verifies certificate:<br/>Trusted CA?<br/>Correct domain?<br/>Not expired?<br/>Chain complete?
-
-    C->>S: ClientKeyExchange
-    Note right of S: Pre-master secret encrypted<br/>with server's public key
-
-    C->>S: ChangeCipherSpec + Finished
-    S-->>C: ChangeCipherSpec + Finished
-
-    Note over C,S: Symmetric-encrypted application data
 
 **What's really happening:** both sides derive the same **symmetric session key** from `client random + server random + pre-master secret`. Only the server (with its private key) can decrypt the pre-master secret. After that, fast AES does the work. **Asymmetric to bootstrap, symmetric for bulk** — the hybrid model in action.
 
