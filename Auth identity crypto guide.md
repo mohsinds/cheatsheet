@@ -61,6 +61,62 @@ SAML   OIDC   Access / ID /
  CLOUD & PROD (AWS IAM/STS, secrets mgmt, key rotation, Zero Trust)
 ```
 
+````mermaid
+mindmap
+  root((IDENTITY & SECURITY))
+    AUTHENTICATION
+      Passwords
+      MFA
+      Sessions
+      Tokens/JWT
+      Federation/SSO
+        SAML
+        OIDC
+    AUTHORIZATION
+      RBAC
+      ReBAC
+      ABAC
+      Policy as-code
+      OAuth2
+        scopes
+    TRANSPORT SECURITY
+      TLS
+      SSL
+        both sides verify
+      mTLS
+    TRUST/PKI
+      Certificates
+      Certificate Authorities
+      Chain-of-trust
+      Root/Intermediate
+    CRYPTO PRIMITIVES
+      Hashing
+        SHA-256
+        bcrypt
+      Symmetric
+        AES-GCM
+      Asymmetric
+        RSA
+        ECC
+      Signatures
+        RS256
+      Key Exchange
+        Diffie-Hellman
+    IAM PROVIDERS
+      Okta
+      Ping
+      Auth0
+      Entra
+      Cognito
+      Keycloak
+    CLOUD & PROD
+      AWS IAM/STS
+      Secrets Management
+      Key Rotation
+      Zero Trust
+````
+
+
 **Reading the map:** the five top branches are the five questions security answers. Everything else is an implementation of one of them. Notice the dependencies flow *upward*: TLS is built on crypto primitives; JWT/OAuth ride on top of TLS; IAM providers package authentication + authorization + federation together; cloud identity wires it all into infrastructure.
 
 > 📺 **Watch (big-picture):** [OAuth 2.0 & OpenID Connect in plain English — Nate Barbettini (OktaDev)](https://www.youtube.com/watch?v=996OiexHze0) · [What Is Single Sign-On (SSO)? — ByteByteGo](https://www.youtube.com/watch?v=O1cRJWYF-g4)
