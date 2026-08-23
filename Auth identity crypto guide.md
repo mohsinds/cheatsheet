@@ -324,20 +324,120 @@ Your server presents the **leaf + intermediates**; the browser walks up until it
 
 ### 6.2 The TLS 1.2 handshake (the classic interview answer)
 
+# TLS Handshake Sequence Diagram
+ 
+## Basic TLS 1.2 Handshake
+ 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    
+    rect rgb(200, 220, 255)
+    Note over Client,Server: TCP Connection Established
+    end
+    
+    rect rgb(255, 240, 200)
+    Note over Client,Server: TLS Handshake (Unencrypted)
+    Client->>Server: ClientHello
+    Note right of Client: TLS versions, cipher options, client random
+    
+    Server->>Client: ServerHello
+    Note left of Server: Chosen cipher, server random
+    
+    Server->>Client: Certificate
+    Note left of Server: Leaf + chain (server public key)
+    
+    Server->>Client: ServerHelloDone
+    Note left of Server: End of server's hello phase
+    
+    rect rgb(255, 230, 230)
+    Note over Client: Verify certificate
+    Note over Client: ✓ Trusted CA?<br/>✓ Right domain?<br/>✓ Not expired?<br/>✓ Chain complete?
+    end
+    
+    Client->>Server: ClientKeyExchange
+    Note right of Client: Pre-master secret<br/>encrypted with<br/>server's PUBLIC key
+    
+    Client->>Server: ChangeCipherSpec + Finished
+    Note right of Client: Switching to encryption
+    
+    Server->>Client: ChangeCipherSpec + Finished
+    Note left of Server: Switching to encryption
+    end
+    
+    rect rgb(200, 255, 200)
+    Note over Client,Server: Symmetric-Encrypted Data (AES-GCM)
+    Client->>Server: Application Data
+    Server->>Client: Application Data
+    end
 ```
-CLIENT                                             SERVER
-  │  ClientHello ─────────────────────────────────►│  TLS versions, cipher options,
-  │                                                 │  client random number
-  │◄───────────────────────────── ServerHello      │  chosen cipher, server random
-  │◄───────────────────────────── Certificate       │  leaf + chain (server public key)
-  │◄───────────────────────────── ServerHelloDone   │
-  │  [client verifies cert: trusted CA? right       │
-  │   domain? not expired? chain complete?]         │
-  │  ClientKeyExchange ────────────────────────────►│  "pre-master secret" encrypted
-  │                                                 │  with server's PUBLIC key
-  │  ChangeCipherSpec + Finished ──────────────────►│
-  │◄──────────────────── ChangeCipherSpec + Finished│
-  │  ══════ symmetric-encrypted application data ═══ │
+ 
+## TLS 1.3 Faster Handshake
+ 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    
+    rect rgb(200, 220, 255)
+    Note over Client,Server: TCP Connection Established
+    end
+    
+    rect rgb(255, 240, 200)
+    Note over Client,Server: TLS 1.3 Handshake (1 RTT)
+    Client->>Server: ClientHello + KeyShare
+    Note right of Client: Cipher options + client random<br/>+ Diffie-Hellman parameters
+    
+    Server->>Client: ServerHello + Certificate + Finished
+    Note left of Server: Chosen cipher + server random<br/>+ server DH params<br/>+ cert verification
+    
+    rect rgb(255, 230, 230)
+    Note over Client: Verify certificate &<br/>compute shared secret
+    end
+    end
+    
+    rect rgb(200, 255, 200)
+    Note over Client,Server: Symmetric-Encrypted Data (AES-GCM)
+    Client->>Server: Finished + Application Data
+    Server->>Client: Application Data
+    end
+```
+ 
+## Detailed Flow with Key Exchange
+ 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 🖥️ Client
+    participant Server as 🖥️ Server
+    
+    Client->>Server: ClientHello<br/>(TLS version, ciphers, random)
+    Server->>Client: ServerHello<br/>(chosen cipher, random)
+    Server->>Client: Certificate<br/>(public key cert)
+    Server->>Client: ServerHelloDone
+    
+    rect rgb(255, 200, 200)
+    Note over Client: Client verifies cert<br/>chain of trust
+    end
+    
+    Client->>Server: ClientKeyExchange<br/>(pre-master secret encrypted)
+    
+    rect rgb(200, 255, 200)
+    Note over Client,Server: Both compute<br/>Master Secret<br/>(from pre-master + randoms)
+    end
+    
+    Client->>Server: ChangeCipherSpec + Finished<br/>(first encrypted message)
+    Server->>Client: ChangeCipherSpec + Finished<br/>(first encrypted message)
+    
+    rect rgb(150, 200, 255)
+    Note over Client,Server: ✅ Secure Channel Established<br/>All data now AES-GCM encrypted
+    end
+    
+    loop Application Data
+        Client->>Server: Encrypted Request
+        Server->>Client: Encrypted Response
+    end
 ```
 
 **What's really happening:** both sides derive the same **symmetric session key** from `client random + server random + pre-master secret`. Only the server (with its private key) can decrypt the pre-master secret. After that, fast AES does the work. **Asymmetric to bootstrap, symmetric for bulk** — the hybrid model in action.
