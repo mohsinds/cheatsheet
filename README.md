@@ -8,7 +8,7 @@ Senior-engineer reference guides — deep enough for production work, structured
 |---|---|---|
 | Authentication / Authorization / Identity / Crypto | ✅ Done | [Authentication-Authorization-Identity-Cryptography-Guide.md](./Authentication-Authorization-Identity-Cryptography-Guide.md) |
 | AWS | ✅ Done | [AWS-Guide.md](./AWS-Guide.md) |
-| Kafka | ⏳ Planned | Kafka-Guide.md |
+| Kafka | ✅ Done | [Kafka-Guide.md](./Kafka-Guide.md) |
 | Flink | ⏳ Planned | Flink-Guide.md |
 | RabbitMQ | ⏳ Planned | RabbitMQ-Guide.md |
 | Terraform | ⏳ Planned | Terraform-Guide.md |
