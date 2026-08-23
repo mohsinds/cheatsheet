@@ -12,7 +12,7 @@ Senior-engineer reference guides — deep enough for production work, structured
 | Flink | ✅ Done | [Flink-Guide.md](./Flink-Guide.md) |
 | RabbitMQ | ✅ Done | [RabbitMQ-Guide.md](./RabbitMQ-Guide.md) |
 | Terraform | ✅ Done | [Terraform-Guide.md](./Terraform-Guide.md) |
-| Spring Boot / Spring Web Services | ⏳ Planned | Spring-Boot-Web-Services-Guide.md |
+| Spring Boot / Spring Web Services | ✅ Done | [Spring-Boot-Web-Services-Guide.md](./Spring-Boot-Web-Services-Guide.md) |
 
 ## How to read a guide
 
