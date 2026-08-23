@@ -10,7 +10,7 @@ Senior-engineer reference guides — deep enough for production work, structured
 | AWS | ✅ Done | [AWS-Guide.md](./AWS-Guide.md) |
 | Kafka | ✅ Done | [Kafka-Guide.md](./Kafka-Guide.md) |
 | Flink | ✅ Done | [Flink-Guide.md](./Flink-Guide.md) |
-| RabbitMQ | ⏳ Planned | RabbitMQ-Guide.md |
+| RabbitMQ | ✅ Done | [RabbitMQ-Guide.md](./RabbitMQ-Guide.md) |
 | Terraform | ⏳ Planned | Terraform-Guide.md |
 | Spring Boot / Spring Web Services | ⏳ Planned | Spring-Boot-Web-Services-Guide.md |
 
