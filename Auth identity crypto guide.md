@@ -618,12 +618,173 @@ Resource Server      = holds the data & accepts tokens (Google Photos API)
 ### Grant types (flows) — pick by client type
 
 **1. Authorization Code + PKCE** — *the default for basically everything now* (web apps, SPAs, mobile).
+# OAuth 2.0 Flows (Mermaid Diagrams)
+ 
+## 1. Authorization Code + PKCE (Modern Default)
+ 
+```mermaid
+sequenceDiagram
+    participant User as 👤 User
+    participant Client as 🖥️ Client App
+    participant AuthServer as 🔐 Auth Server
+    participant API as 📦 Resource API
+    
+    rect rgb(200, 220, 255)
+    Note over User,Client: Front-Channel (Browser/Public)
+    User->>Client: Click "Login"
+    Client->>Client: Generate code_challenge from random code_verifier
+    Client->>AuthServer: ① ClientHello redirect<br/>(client_id, redirect_uri, scope, code_challenge)
+    AuthServer->>User: Show login & consent screen
+    User->>AuthServer: ② Login + approve scopes
+    AuthServer->>Client: ③ Redirect with CODE (short-lived)
+    end
+    
+    rect rgb(255, 240, 200)
+    Note over Client,AuthServer: Back-Channel (Server-to-Server, Secure)
+    Client->>AuthServer: ④ Exchange CODE for tokens<br/>(code, client_id, code_verifier, client_secret?)
+    AuthServer->>AuthServer: Verify: code_challenge matches code_verifier
+    AuthServer->>Client: ⑤ Access Token + Refresh Token<br/>(+ ID token if OIDC)
+    end
+    
+    rect rgb(200, 255, 200)
+    Note over Client,API: Authenticated API Calls
+    Client->>API: Request with Authorization header<br/>(Bearer access_token)
+    API->>API: Validate token signature
+    API->>Client: ✅ Protected Resource
+    end
 ```
-User ─► Client redirects to Auth Server ─► user logs in & consents
-     ◄─ Auth Server redirects back with a short-lived CODE
-Client ─► exchanges CODE (+ PKCE verifier / client secret) for tokens  [back channel]
-       ◄─ access token (+ refresh token, + ID token if OIDC)
+ 
+## 2. PKCE Details (Why It's Secure)
+ 
+```mermaid
+sequenceDiagram
+    participant Client as 🖥️ Client App
+    participant AuthServer as 🔐 Auth Server
+    
+    rect rgb(255, 230, 230)
+    Note over Client: Client-side (can't keep secrets)
+    Client->>Client: code_verifier = random_string()
+    Client->>Client: code_challenge = SHA256(code_verifier)
+    Note over Client: Send challenge, keep verifier secret
+    end
+    
+    rect rgb(240, 240, 240)
+    Note over AuthServer: Auth Server-side
+    AuthServer->>AuthServer: Store code_challenge in CODE
+    end
+    
+    rect rgb(255, 230, 230)
+    Note over Client: Exchange phase
+    Client->>AuthServer: Send CODE + code_verifier
+    AuthServer->>AuthServer: Verify: SHA256(code_verifier) == stored_code_challenge
+    alt ✅ Match
+        AuthServer->>Client: Issue access_token
+    else ❌ No Match
+        AuthServer->>Client: ❌ Error (attacker can't fake it)
+    end
+    end
 ```
+ 
+## 3. Refresh Token Flow
+ 
+```mermaid
+sequenceDiagram
+    participant Client as 🖥️ Client App
+    participant AuthServer as 🔐 Auth Server
+    participant API as 📦 Resource API
+    
+    rect rgb(200, 255, 200)
+    Note over Client,API: Access token expires (usually 15 min)
+    Client->>API: Request with old token
+    API->>Client: ❌ 401 Unauthorized (token expired)
+    end
+    
+    rect rgb(255, 240, 200)
+    Note over Client,AuthServer: Silent refresh (no user interaction!)
+    Client->>AuthServer: POST /token<br/>(grant_type=refresh_token, refresh_token, client_id)
+    AuthServer->>AuthServer: Validate refresh token
+    AuthServer->>Client: ✅ New access_token
+    Note over Client: Automatic, no login needed
+    end
+    
+    rect rgb(200, 255, 200)
+    Note over Client,API: Continue with new token
+    Client->>API: Request with new access_token
+    API->>Client: ✅ Protected Resource
+    end
+```
+ 
+## 4. Implicit Flow (DEPRECATED ❌)
+ 
+```mermaid
+sequenceDiagram
+    participant User as 👤 User
+    participant Client as 🖥️ Client App
+    participant AuthServer as 🔐 Auth Server
+    
+    rect rgb(255, 200, 200)
+    Note over User,AuthServer: ⚠️ DEPRECATED - Don't use!
+    User->>Client: Click "Login"
+    Client->>AuthServer: Redirect (client_id, redirect_uri, scope)
+    AuthServer->>User: Show login & consent
+    User->>AuthServer: Login + approve
+    AuthServer->>Client: ⚠️ Redirect with ACCESS TOKEN in URL fragment
+    Note over Client: ❌ Token exposed in browser history & referrer header!
+    end
+```
+ 
+## 5. Client Credentials (Service-to-Service)
+ 
+```mermaid
+sequenceDiagram
+    participant Service1 as 🖥️ Service A
+    participant AuthServer as 🔐 Auth Server
+    participant Service2 as 📦 Service B (API)
+    
+    rect rgb(255, 240, 200)
+    Note over Service1,AuthServer: No user involved (backend-only)
+    Service1->>AuthServer: POST /token<br/>(grant_type=client_credentials,<br/>client_id, client_secret, scope)
+    AuthServer->>AuthServer: Verify credentials
+    AuthServer->>Service1: ✅ Access token (long-lived, no refresh)
+    end
+    
+    rect rgb(200, 255, 200)
+    Note over Service1,Service2: Direct service calls
+    Service1->>Service2: Request with access_token
+    Service2->>Service1: ✅ Protected Resource
+    end
+```
+ 
+## 6. Full OAuth 2.0 Grant Types Comparison
+ 
+```mermaid
+graph TD
+    A["OAuth 2.0 Grant Types"] --> B["User Involved?"]
+    
+    B -->|YES| C["Front-End or Mobile?"]
+    B -->|NO| D["Client Credentials"]
+    
+    C -->|YES<br/>SPA/Mobile| E["Authorization Code<br/>+ PKCE"]
+    C -->|NO<br/>Web App<br/>with Backend| F["Authorization Code<br/>+ Client Secret"]
+    
+    E --> E1["✅ RECOMMENDED<br/>- Most Secure<br/>- No client_secret<br/>- Code verifier<br/>- Refresh token support"]
+    F --> F1["✅ SECURE<br/>- Server-to-server<br/>- Uses client_secret<br/>- Refresh token support"]
+    D --> D1["✅ For Service<br/>- No user login<br/>- Backend only<br/>- Long-lived tokens"]
+    
+    style E fill:#90EE90
+    style F fill:#90EE90
+    style D fill:#FFD700
+    style E1 fill:#E8F5E9
+    style F1 fill:#E8F5E9
+    style D1 fill:#FFF9C4
+```
+ 
+**Quick reference:**
+- **Use Authorization Code + PKCE** for SPAs, mobile apps, web apps
+- **Use Client Credentials** for service-to-service calls
+- **Never use Implicit flow** (deprecated)
+- **Always use refresh tokens** for long-lived sessions
+
 - The **code** (not the token) travels through the browser redirect, so tokens never appear in the URL or browser history.
 - **PKCE** (Proof Key for Code Exchange, said "pixie") — the client generates a random `code_verifier`, sends its hash (`code_challenge`) up front, then proves it holds the verifier when redeeming the code. **Stops authorization-code interception** on public clients (mobile/SPA that can't keep a secret). Now recommended for *all* clients.
 
@@ -739,17 +900,225 @@ Use for backend cron jobs and service-to-service calls.
 ---
 
 <a name="13-authz-models"></a>
-## 14. Authorization Models: RBAC, ABAC, ReBAC, PBAC, ACL
+# Authorization Models: RBAC, ABAC, ReBAC, PBAC, ACL
 
-**Definition.** Once you know *who* a user is, these models decide *what they can do*, from simplest to most flexible.
+## 1. Evolution from Simple to Flexible
 
-**Where it's used.** Every app with permissions: admin panels, multi-tenant SaaS, document sharing, cloud infra, healthcare records.
-
+```mermaid
+graph LR
+    A["🔐 ACL<br/>(Access Control List)<br/>per-item"] --> B["👤 RBAC<br/>(Role-Based)<br/>roles"]
+    B --> C["🎯 RBAC + ABAC<br/>(Hybrid)<br/>roles + attributes"]
+    C --> D["📊 ABAC<br/>(Attribute-Based)<br/>attributes only"]
+    D --> E["🔗 ReBAC<br/>(Relationship-Based)<br/>relationships"]
+    E --> F["⚙️ Policy-as-Code<br/>(OPA/Cedar)<br/>externalized engine"]
+    
+    G["Simplicity ◄──────────────► Flexibility"]
+    
+    style A fill:#FF6B6B
+    style B fill:#FFA500
+    style C fill:#FFD700
+    style D fill:#90EE90
+    style E fill:#87CEEB
+    style F fill:#9370DB
+    style G fill:#F0F0F0
 ```
-        AUTHORIZATION MODELS  (simple ──────────────► flexible)
-   ACL ──► RBAC ──► RBAC+ABAC ──► ABAC ──► ReBAC ──► Policy-as-code (OPA/Cedar)
-  per-item  roles   hybrid       attributes relationships   externalized engine
+
+## 2. Detailed Comparison Table
+
+```mermaid
+graph TD
+    subgraph ACL ["🔐 ACL (Access Control List)<br/>Simplest"]
+        ACL1["user:alice → file:doc1 → read<br/>user:bob → file:doc1 → write<br/>Stored per resource<br/>(unscalable for 1000s users)"]
+    end
+    
+    subgraph RBAC ["👤 RBAC (Role-Based)<br/>Most Common"]
+        RBAC1["user → role → permissions<br/>alice → Editor → read,write<br/>bob → Viewer → read<br/>Simple, manageable, scales better<br/>No context (e.g., 'only on weekdays')"]
+    end
+    
+    subgraph RBAC_ABAC ["🎯 RBAC + ABAC (Hybrid)<br/>Practical"]
+        RA1["Roles + Attributes<br/>alice has role=Editor<br/>+ time=business-hours<br/>+ ip=internal-network<br/>Balance of simplicity & flexibility"]
+    end
+    
+    subgraph ABAC ["📊 ABAC (Attribute-Based)<br/>Flexible"]
+        ABAC1["Everything is an attribute<br/>user.dept='Engineering'<br/>resource.sensitivity='high'<br/>environment.time='9-5'<br/>Policy: if user.dept=='Eng' AND<br/>resource.sensitivity=='high' THEN read"]
+    end
+    
+    subgraph ReBAC ["🔗 ReBAC (Relationship-Based)<br/>Modern Graph-Based"]
+        ReBAC1["alice is 'owner' of doc1<br/>bob is 'collaborator' of doc1<br/>alice is 'parent' of child_user<br/>Graph-based relationships<br/>Ex: Figma, Google Docs, Notion"]
+    end
+    
+    subgraph Policy ["⚙️ Policy-as-Code (OPA/Cedar)<br/>Most Flexible"]
+        Policy1["External policy engine<br/>Written in Rego/Cedar<br/>rule: 'user can read doc if<br/>  user.role==editor AND<br/>  doc.classification==public AND<br/>  now < doc.expiry'<br/>Testable, versioned, audit trail"]
+    end
+    
+    style ACL fill:#FFE4E1
+    style RBAC fill:#FFE4CD
+    style RBAC_ABAC fill:#FFFACD
+    style ABAC fill:#E0FFE0
+    style ReBAC fill:#E0F0FF
+    style Policy fill:#F0E0FF
 ```
+
+## 3. Real-World Examples per Model
+
+```mermaid
+mindmap
+  root((Authorization Models))
+    🔐 ACL
+      Google Drive
+        Share with specific person
+        Direct item-level perms
+      Unix File System
+        chmod 755
+        Per-file ownership
+    👤 RBAC
+      Admin Dashboard
+        Admin, Editor, Viewer roles
+        Simple role assignment
+      SaaS App
+        Owner, Member, Guest
+        Role-based feature access
+    🎯 RBAC + ABAC
+      Healthcare Platform
+        Role: Doctor
+        + Attribute: Department==Cardiology
+        + Context: Time==business-hours
+    📊 ABAC
+      Enterprise Data Platform
+        Policy engine evaluates attributes
+        Complex conditional rules
+        Heavy on policy writing
+    🔗 ReBAC
+      Figma
+        owner → doc
+        collaborator → doc
+        comment_thread → {reply, edit}
+      Slack
+        member → workspace
+        owner → channel
+    ⚙️ Policy-as-Code
+      Kubernetes (OPA)
+        Policies: enforce pod security
+        Policies: network policies
+        Policies: resource quotas
+      HashiCorp Sentinel
+        Policy on Terraform runs
+        Compliance enforcement
+```
+
+## 4. Decision Tree: Which Model?
+
+```mermaid
+graph TD
+    A["Do you need<br/>authorization?"] -->|YES| B["Scale?"]
+    
+    B -->|Tiny<br/>1-10 users<br/>1-100 items| C["ACL"]
+    C --> C1["✅ Simple, direct<br/>❌ Doesn't scale<br/>Example: Unix chmod"]
+    
+    B -->|Small-Medium<br/>10-1000 users| D["Do you need<br/>context/attributes?"]
+    D -->|NO| E["RBAC"]
+    E --> E1["✅ Most common<br/>Role: Editor, Viewer, Admin<br/>Example: SaaS app roles"]
+    
+    D -->|YES<br/>time, ip, dept| F["RBAC + ABAC<br/>(Hybrid)"]
+    F --> F1["✅ Practical<br/>Roles + context checks<br/>Example: Healthcare app"]
+    
+    B -->|Large<br/>1000+ users<br/>Complex rules| G["Do you have<br/>graph relationships?"]
+    
+    G -->|YES<br/>owner, collaborator| H["ReBAC"]
+    H --> H1["✅ Modern<br/>Graph-based<br/>Example: Figma, Google Docs"]
+    
+    G -->|NO<br/>Only attributes| I["Do you want<br/>externalized engine?"]
+    
+    I -->|NO| J["ABAC"]
+    J --> J1["✅ Flexible<br/>❌ Complex policy writing<br/>Example: Enterprise rules"]
+    
+    I -->|YES<br/>testable, versioned| K["Policy-as-Code<br/>OPA/Cedar"]
+    K --> K1["✅ Most powerful<br/>Audit-trail friendly<br/>Example: Kubernetes"]
+    
+    style C fill:#FFE4E1
+    style E fill:#FFE4CD
+    style F fill:#FFFACD
+    style H fill:#E0F0FF
+    style J fill:#E0FFE0
+    style K fill:#F0E0FF
+```
+
+## 5. Code Examples: Each Model
+
+```mermaid
+graph LR
+    subgraph ACLExample ["ACL Example<br/>Unix File Permissions"]
+        ACL_code["chmod 644 document.txt<br/>rw- r-- r--<br/>Owner: read+write<br/>Group: read<br/>Others: read"]
+    end
+    
+    subgraph RBACExample ["RBAC Example<br/>SaaS App"]
+        RBAC_code["User: alice<br/>Role: Editor<br/>Permissions: read, write, comment<br/><br/>User: bob<br/>Role: Viewer<br/>Permissions: read"]
+    end
+    
+    subgraph ABACExample ["ABAC Example<br/>Policy Engine"]
+        ABAC_code["rule: allow if<br/>  user.dept == 'Engineering'<br/>  AND resource.classification == 'internal'<br/>  AND time_of_day() in [9, 17]"]
+    end
+    
+    subgraph ReBABCExample ["ReBAC Example<br/>Graph DB"]
+        ReBAC_code["edge: alice -[owner]-> doc1<br/>edge: bob -[collaborator]-> doc1<br/>Query: doc1.can_edit?<br/>  → who has [owner] or [editor] edge?"]
+    end
+    
+    subgraph PolicyExample ["Policy-as-Code<br/>OPA/Rego"]
+        Policy_code["allow {\n  input.user.role == 'admin'\n  input.resource.type == 'secret'\n  input.action == 'read'\n  input.time < input.resource.expiry\n}"]
+    end
+    
+    style ACLExample fill:#FFE4E1
+    style RBACExample fill:#FFE4CD
+    style ABACExample fill:#E0FFE0
+    style ReBABCExample fill:#E0F0FF
+    style PolicyExample fill:#F0E0FF
+```
+
+## 6. Comparison: Feature Matrix
+
+```mermaid
+graph LR
+    subgraph Features ["Feature Comparison"]
+        direction LR
+        F1["Scalability"]
+        F2["Flexibility"]
+        F3["Ease of Use"]
+        F4["Testability"]
+        F5["Audit Trail"]
+    end
+    
+    subgraph Scores ["Scores out of 10"]
+        ACL_S["ACL: 2, 2, 10, 5, 4"]
+        RBAC_S["RBAC: 8, 5, 9, 6, 6"]
+        ABAC_S["ABAC: 7, 9, 3, 4, 5"]
+        ReBAC_S["ReBAC: 8, 8, 7, 7, 7"]
+        Policy_S["Policy: 9, 10, 4, 10, 10"]
+    end
+    
+    style Features fill:#F0F0F0
+    style Scores fill:#FFFACD
+```
+
+## When to Use Each
+
+| Model | Best For | Example | Gotchas |
+|-------|----------|---------|---------|
+| **ACL** | Tiny systems, file perms | Unix chmod, basic WordPress | Doesn't scale |
+| **RBAC** | Most SaaS apps | Admin/Editor/Viewer roles | No context (time, location, etc.) |
+| **RBAC+ABAC** | Medium complexity | Healthcare + time-based access | Policy sprawl if too many attributes |
+| **ABAC** | Complex rules | Enterprise data classification | Hard to manage, easy to misconfigure |
+| **ReBAC** | Graph relationships | Figma, Google Docs, Slack | Need graph DB expertise |
+| **Policy-as-Code** | Highly regulated | Kubernetes, financial services | Overkill for simple apps, steep learning curve |
+
+## Usage in GitHub
+
+Paste any diagram into your `.md` file.
+
+**Key takeaways:**
+- ✅ **Start with RBAC** — simplest for most apps
+- ➕ **Add ABAC** when you need context (time, location, IP)
+- 🔗 **Use ReBAC** when permissions follow graph relationships (owner, collaborator, parent)
+- ⚙️ **Use Policy-as-Code** for highly regulated systems with audit requirements
 
 ### ACL (Access Control List)
 **Definition.** A per-resource list of who can do what: `file.txt → {alice: read, bob: write}`. Simple and granular, but doesn't scale to millions of resources × users.
