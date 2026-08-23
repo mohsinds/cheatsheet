@@ -33,34 +33,6 @@
 <a name="0-mindmap"></a>
 ## 1. Mind Map — the whole landscape on one screen
 
-```
-                          IDENTITY & SECURITY
-                                  │
-     ┌────────────────┬──────────┼───────────┬──────────────────┐
-     │                │          │           │                  │
- AUTHENTICATION  AUTHORIZATION  TRANSPORT   TRUST/PKI        CRYPTO
- (who are you?)  (what can you  SECURITY    (prove an        PRIMITIVES
-     │            do?)          (private    endpoint's       (the lego bricks)
-     │                │          channel)    identity)            │
-     │                │          │             │            ┌─────┼─────┐
-  ┌──┴───┐        ┌───┴────┐  ┌──┴───┐    ┌────┴────┐    Hashing  Symmetric
-  │      │        │        │  │      │    │         │    (SHA-256,  (AES-GCM)
-Passwords MFA   RBAC    ABAC TLS   mTLS  Certs     CAs   bcrypt)      │
-  │      │        │        │  │      │    │         │       │    Asymmetric
-Sessions  │     ReBAC   Policy SSL  (both Chain-of  Root/    │    (RSA, ECC)
-  │    Tokens/     │     as-code sides  trust   Inter-   Signatures     │
-  │     JWT      OAuth2         verify)         mediate  (RS256)  Key exchange
-  │      │      scopes                                            (Diffie-Hellman)
-Federation/SSO  │
-  │      │    ┌──┴──────┐
-SAML   OIDC   Access / ID /
-  │      │    Refresh tokens
-  └──┬───┘
- IAM PROVIDERS (Okta, Ping, Auth0, Entra, Cognito, Keycloak)
-     │
- CLOUD & PROD (AWS IAM/STS, secrets mgmt, key rotation, Zero Trust)
-```
-
 ````mermaid
 mindmap
   root((IDENTITY & SECURITY))
@@ -115,7 +87,6 @@ mindmap
       Key Rotation
       Zero Trust
 ````
-
 
 **Reading the map:** the five top branches are the five questions security answers. Everything else is an implementation of one of them. Notice the dependencies flow *upward*: TLS is built on crypto primitives; JWT/OAuth ride on top of TLS; IAM providers package authentication + authorization + federation together; cloud identity wires it all into infrastructure.
 
@@ -255,6 +226,12 @@ Verify:  SHA256(message)  ==  decrypt( signature, sender_public_key )  ?
 
 If they match: (1) the message is unaltered (hash matches), and (2) it came from the private-key holder. This underpins **certificates, JWTs (RS256), code signing, and TLS**. Note: signing does **not** hide the message — encryption hides, signing proves.
 
+### 4.5 Key Exchange (Diffie-Hellman)
+
+**Definition.** **Diffie–Hellman (DH)** is a method that lets two parties who have never met compute the *same* shared secret over an open, eavesdropped channel — without ever transmitting the secret itself. Each side combines its own private value with the other side's public value; the math (modular exponentiation, or elliptic-curve point multiplication for **ECDH**) makes the result identical on both ends, but unrecoverable from what an eavesdropper saw.
+
+**Where it's used.** Bootstrapping the shared session key in TLS and SSH. **ECDHE** (Elliptic-Curve Diffie-Hellman *Ephemeral*) — a fresh, throwaway key pair generated per session — is what gives TLS 1.3 its mandatory forward secrecy (§6.3).
+
 > 📺 **Watch:** [Public Key Cryptography — Computerphile](https://www.youtube.com/watch?v=GSIDS_lvRv4) · [Secret Key Exchange (Diffie-Hellman) — Computerphile](https://www.youtube.com/watch?v=NmM9HA2MQGI)
 
 ---
@@ -300,7 +277,7 @@ Your server presents the **leaf + intermediates**; the browser walks up until it
 - **SAN / multi-domain** — several domains in one cert.
 - **Self-signed** — you act as your own CA. Fine for internal/dev; browsers won't trust it by default.
 
-> **War story:** A mobile app started rejecting API calls after a year. Cause: they had pinned (**certificate pinning** = hard-coding which cert to trust) the *intermediate* CA cert, and the CA rotated it. Lesson: pin the **public key** (SPKI hash), not the cert, and always pin a backup — pinning stops man-in-the-middle attacks but is a self-inflicted outage if you don't plan rotation.
+> **War story:** A mobile app started rejecting API calls after a year. Cause: they had pinned (**certificate pinning** = hard-coding which cert to trust) the *intermediate* CA cert, and the CA rotated it. Lesson: pin the **public key** (**SPKI** — Subject Public Key Info — the standard hash of just the key, not the whole cert), not the cert, and always pin a backup — pinning stops man-in-the-middle attacks but is a self-inflicted outage if you don't plan rotation.
 
 > 📺 **Watch:** [Transport Layer Security (TLS) — Computerphile](https://www.youtube.com/watch?v=0TLDTodL7Lc) *(covers certs & the chain of trust)* · [Public Key Cryptography — Computerphile](https://www.youtube.com/watch?v=GSIDS_lvRv4)
 
@@ -316,18 +293,16 @@ Your server presents the **leaf + intermediates**; the browser walks up until it
 ### 6.1 What happens when you hit `https://example.com`
 
 ```
-1. DNS resolve example.com → IP address
-2. TCP handshake (SYN, SYN-ACK, ACK)   ← reliable connection established
+1. DNS (Domain Name System) resolve example.com → IP address
+2. TCP (Transmission Control Protocol) handshake (SYN, SYN-ACK, ACK)   ← reliable connection established
 3. TLS handshake                        ← encryption established (below)
 4. Encrypted HTTP request/response flows through the tunnel
 ```
 
 ### 6.2 The TLS 1.2 handshake (the classic interview answer)
 
-# TLS Handshake Sequence Diagram
- 
-## Basic TLS 1.2 Handshake
- 
+#### Diagram: full TLS 1.2 handshake
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -359,6 +334,10 @@ sequenceDiagram
     Client->>Server: ClientKeyExchange
     Note right of Client: Pre-master secret<br/>encrypted with<br/>server's PUBLIC key
     
+    rect rgb(200, 255, 200)
+    Note over Client,Server: Both derive the same Master Secret<br/>from pre-master secret + client random + server random
+    end
+    
     Client->>Server: ChangeCipherSpec + Finished
     Note right of Client: Switching to encryption
     
@@ -373,8 +352,8 @@ sequenceDiagram
     end
 ```
  
-## TLS 1.3 Faster Handshake
- 
+#### Diagram: TLS 1.3 handshake (1-RTT — faster)
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -404,42 +383,6 @@ sequenceDiagram
     end
 ```
  
-## Detailed Flow with Key Exchange
- 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Client as 🖥️ Client
-    participant Server as 🖥️ Server
-    
-    Client->>Server: ClientHello<br/>(TLS version, ciphers, random)
-    Server->>Client: ServerHello<br/>(chosen cipher, random)
-    Server->>Client: Certificate<br/>(public key cert)
-    Server->>Client: ServerHelloDone
-    
-    rect rgb(255, 200, 200)
-    Note over Client: Client verifies cert<br/>chain of trust
-    end
-    
-    Client->>Server: ClientKeyExchange<br/>(pre-master secret encrypted)
-    
-    rect rgb(200, 255, 200)
-    Note over Client,Server: Both compute<br/>Master Secret<br/>(from pre-master + randoms)
-    end
-    
-    Client->>Server: ChangeCipherSpec + Finished<br/>(first encrypted message)
-    Server->>Client: ChangeCipherSpec + Finished<br/>(first encrypted message)
-    
-    rect rgb(150, 200, 255)
-    Note over Client,Server: ✅ Secure Channel Established<br/>All data now AES-GCM encrypted
-    end
-    
-    loop Application Data
-        Client->>Server: Encrypted Request
-        Server->>Client: Encrypted Response
-    end
-```
-
 **What's really happening:** both sides derive the same **symmetric session key** from `client random + server random + pre-master secret`. Only the server (with its private key) can decrypt the pre-master secret. After that, fast AES does the work. **Asymmetric to bootstrap, symmetric for bulk** — the hybrid model in action.
 
 ### 6.3 TLS 1.3 — what changed
@@ -447,7 +390,7 @@ sequenceDiagram
 - **Forward secrecy is mandatory** — always uses **ECDHE** (Elliptic-Curve Diffie-Hellman Ephemeral — a key-exchange that generates a throwaway key per session). Even if the server's private key leaks *later*, past recorded sessions stay safe.
 - Dropped all weak/legacy ciphers (no RSA key exchange, no CBC, no SHA-1).
 
-> **Forward secrecy (PFS)** — a favorite interview concept. Old TLS with RSA key exchange: steal the private key → decrypt all recorded past traffic. With ECDHE: each session used an ephemeral (throwaway) key that was never transmitted, so recorded traffic can't be decrypted later. Always want PFS.
+> **Forward secrecy** (**PFS**, Perfect Forward Secrecy) — a favorite interview concept. Old TLS with RSA key exchange: steal the private key → decrypt all recorded past traffic. With ECDHE: each session used an ephemeral (throwaway) key that was never transmitted, so recorded traffic can't be decrypted later. Always want PFS.
 
 ### 6.4 Cipher suite, decoded
 `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`
@@ -618,10 +561,9 @@ Resource Server      = holds the data & accepts tokens (Google Photos API)
 ### Grant types (flows) — pick by client type
 
 **1. Authorization Code + PKCE** — *the default for basically everything now* (web apps, SPAs, mobile).
-# OAuth 2.0 Flows (Mermaid Diagrams)
- 
-## 1. Authorization Code + PKCE (Modern Default)
- 
+
+#### Diagram 1: Authorization Code + PKCE (modern default)
+
 ```mermaid
 sequenceDiagram
     participant User as 👤 User
@@ -654,7 +596,7 @@ sequenceDiagram
     end
 ```
  
-## 2. PKCE Details (Why It's Secure)
+#### Diagram 2: PKCE details (why it's secure)
  
 ```mermaid
 sequenceDiagram
@@ -685,7 +627,7 @@ sequenceDiagram
     end
 ```
  
-## 3. Refresh Token Flow
+#### Diagram 3: refresh token flow
  
 ```mermaid
 sequenceDiagram
@@ -714,7 +656,7 @@ sequenceDiagram
     end
 ```
  
-## 4. Implicit Flow (DEPRECATED ❌)
+#### Diagram 4: implicit flow (deprecated ❌)
  
 ```mermaid
 sequenceDiagram
@@ -733,7 +675,7 @@ sequenceDiagram
     end
 ```
  
-## 5. Client Credentials (Service-to-Service)
+#### Diagram 5: client credentials (service-to-service)
  
 ```mermaid
 sequenceDiagram
@@ -755,7 +697,7 @@ sequenceDiagram
     end
 ```
  
-## 6. Full OAuth 2.0 Grant Types Comparison
+#### Diagram 6: full OAuth 2.0 grant types comparison
  
 ```mermaid
 graph TD
@@ -788,11 +730,7 @@ graph TD
 - The **code** (not the token) travels through the browser redirect, so tokens never appear in the URL or browser history.
 - **PKCE** (Proof Key for Code Exchange, said "pixie") — the client generates a random `code_verifier`, sends its hash (`code_challenge`) up front, then proves it holds the verifier when redeeming the code. **Stops authorization-code interception** on public clients (mobile/SPA that can't keep a secret). Now recommended for *all* clients.
 
-**2. Client Credentials** — machine-to-machine, no user involved.
-```
-Service A ─► Auth Server (client_id + client_secret) ─► access token ─► Service B
-```
-Use for backend cron jobs and service-to-service calls.
+**2. Client Credentials** — machine-to-machine, no user involved (see Diagram 5). Auth server exchanges a `client_id` + `client_secret` directly for an access token — used for backend cron jobs and service-to-service calls.
 
 **3. Refresh Token** — exchange a refresh token for a fresh access token (see §9).
 
@@ -900,9 +838,13 @@ Use for backend cron jobs and service-to-service calls.
 ---
 
 <a name="13-authz-models"></a>
-# Authorization Models: RBAC, ABAC, ReBAC, PBAC, ACL
+## 14. Authorization Models: RBAC, ABAC, ReBAC, PBAC, ACL
 
-## 1. Evolution from Simple to Flexible
+**Definition.** Once you know *who* the user is (AuthN), you still need to decide *what they can do* (AuthZ, §3). These five models are different strategies for making — and storing — that decision. Each one trades simplicity for flexibility; most real systems start on the left of the diagram below and move right as they grow.
+
+**Where it's used.** Every app with more than one user role: admin dashboards, SaaS permissions, file-sharing tools, enterprise data platforms, Kubernetes/infra policy.
+
+### 14.1 Evolution from Simple to Flexible
 
 ```mermaid
 graph LR
@@ -923,90 +865,18 @@ graph LR
     style G fill:#F0F0F0
 ```
 
-## 2. Detailed Comparison Table
+### 14.2 Model Comparison
 
-```mermaid
-graph TD
-    subgraph ACL ["🔐 ACL (Access Control List)<br/>Simplest"]
-        ACL1["user:alice → file:doc1 → read<br/>user:bob → file:doc1 → write<br/>Stored per resource<br/>(unscalable for 1000s users)"]
-    end
-    
-    subgraph RBAC ["👤 RBAC (Role-Based)<br/>Most Common"]
-        RBAC1["user → role → permissions<br/>alice → Editor → read,write<br/>bob → Viewer → read<br/>Simple, manageable, scales better<br/>No context (e.g., 'only on weekdays')"]
-    end
-    
-    subgraph RBAC_ABAC ["🎯 RBAC + ABAC (Hybrid)<br/>Practical"]
-        RA1["Roles + Attributes<br/>alice has role=Editor<br/>+ time=business-hours<br/>+ ip=internal-network<br/>Balance of simplicity & flexibility"]
-    end
-    
-    subgraph ABAC ["📊 ABAC (Attribute-Based)<br/>Flexible"]
-        ABAC1["Everything is an attribute<br/>user.dept='Engineering'<br/>resource.sensitivity='high'<br/>environment.time='9-5'<br/>Policy: if user.dept=='Eng' AND<br/>resource.sensitivity=='high' THEN read"]
-    end
-    
-    subgraph ReBAC ["🔗 ReBAC (Relationship-Based)<br/>Modern Graph-Based"]
-        ReBAC1["alice is 'owner' of doc1<br/>bob is 'collaborator' of doc1<br/>alice is 'parent' of child_user<br/>Graph-based relationships<br/>Ex: Figma, Google Docs, Notion"]
-    end
-    
-    subgraph Policy ["⚙️ Policy-as-Code (OPA/Cedar)<br/>Most Flexible"]
-        Policy1["External policy engine<br/>Written in Rego/Cedar<br/>rule: 'user can read doc if<br/>  user.role==editor AND<br/>  doc.classification==public AND<br/>  now < doc.expiry'<br/>Testable, versioned, audit trail"]
-    end
-    
-    style ACL fill:#FFE4E1
-    style RBAC fill:#FFE4CD
-    style RBAC_ABAC fill:#FFFACD
-    style ABAC fill:#E0FFE0
-    style ReBAC fill:#E0F0FF
-    style Policy fill:#F0E0FF
-```
+| Model | How access is decided | Real-world examples | Scalability | Flexibility | Key gotcha |
+|---|---|---|---|---|---|
+| **ACL** | Direct per-resource list: `file → {user: permission}` | Unix `chmod`, Google Drive "share with this person" | Low (grows with users × resources) | Low | Doesn't scale past small user/resource counts |
+| **RBAC** | `user → role → permissions` | Admin/Editor/Viewer in most SaaS apps | Medium–High | Low–Medium | **Role explosion** — no built-in concept of context (time, location) |
+| **RBAC + ABAC (hybrid)** | Role, plus attribute conditions on top | Healthcare app: role=Doctor + dept=Cardiology + business-hours | High | Medium–High | Policy sprawl if attributes multiply unchecked |
+| **ABAC** | Policy evaluates attributes of user/resource/action/environment | Enterprise data classification, government clearance systems | High | High | Hard to audit ("why *can* Alice see this?"); needs a policy engine |
+| **ReBAC** | Permissions follow graph relationships (owner, collaborator, parent) | Figma, Google Docs, Notion, Slack sharing | High | High | Needs graph-DB thinking; harder to reason about locally |
+| **Policy-as-Code (PBAC)** | Externalized engine evaluates a written policy (Rego/Cedar) | Kubernetes (OPA), Terraform guardrails (Sentinel), financial services | High | Highest | Steep learning curve; overkill for a simple app |
 
-## 3. Real-World Examples per Model
-
-```mermaid
-mindmap
-  root((Authorization Models))
-    🔐 ACL
-      Google Drive
-        Share with specific person
-        Direct item-level perms
-      Unix File System
-        chmod 755
-        Per-file ownership
-    👤 RBAC
-      Admin Dashboard
-        Admin, Editor, Viewer roles
-        Simple role assignment
-      SaaS App
-        Owner, Member, Guest
-        Role-based feature access
-    🎯 RBAC + ABAC
-      Healthcare Platform
-        Role: Doctor
-        + Attribute: Department==Cardiology
-        + Context: Time==business-hours
-    📊 ABAC
-      Enterprise Data Platform
-        Policy engine evaluates attributes
-        Complex conditional rules
-        Heavy on policy writing
-    🔗 ReBAC
-      Figma
-        owner → doc
-        collaborator → doc
-        comment_thread → {reply, edit}
-      Slack
-        member → workspace
-        owner → channel
-    ⚙️ Policy-as-Code
-      Kubernetes (OPA)
-        Policies: enforce pod security
-        Policies: network policies
-        Policies: resource quotas
-      HashiCorp Sentinel
-        Policy on Terraform runs
-        Compliance enforcement
-```
-
-## 4. Decision Tree: Which Model?
+### 14.3 Decision Tree: Which Model to Use
 
 ```mermaid
 graph TD
@@ -1043,87 +913,13 @@ graph TD
     style K fill:#F0E0FF
 ```
 
-## 5. Code Examples: Each Model
-
-```mermaid
-graph LR
-    subgraph ACLExample ["ACL Example<br/>Unix File Permissions"]
-        ACL_code["chmod 644 document.txt<br/>rw- r-- r--<br/>Owner: read+write<br/>Group: read<br/>Others: read"]
-    end
-    
-    subgraph RBACExample ["RBAC Example<br/>SaaS App"]
-        RBAC_code["User: alice<br/>Role: Editor<br/>Permissions: read, write, comment<br/><br/>User: bob<br/>Role: Viewer<br/>Permissions: read"]
-    end
-    
-    subgraph ABACExample ["ABAC Example<br/>Policy Engine"]
-        ABAC_code["rule: allow if<br/>  user.dept == 'Engineering'<br/>  AND resource.classification == 'internal'<br/>  AND time_of_day() in [9, 17]"]
-    end
-    
-    subgraph ReBABCExample ["ReBAC Example<br/>Graph DB"]
-        ReBAC_code["edge: alice -[owner]-> doc1<br/>edge: bob -[collaborator]-> doc1<br/>Query: doc1.can_edit?<br/>  → who has [owner] or [editor] edge?"]
-    end
-    
-    subgraph PolicyExample ["Policy-as-Code<br/>OPA/Rego"]
-        Policy_code["allow {\n  input.user.role == 'admin'\n  input.resource.type == 'secret'\n  input.action == 'read'\n  input.time < input.resource.expiry\n}"]
-    end
-    
-    style ACLExample fill:#FFE4E1
-    style RBACExample fill:#FFE4CD
-    style ABACExample fill:#E0FFE0
-    style ReBABCExample fill:#E0F0FF
-    style PolicyExample fill:#F0E0FF
-```
-
-## 6. Comparison: Feature Matrix
-
-```mermaid
-graph LR
-    subgraph Features ["Feature Comparison"]
-        direction LR
-        F1["Scalability"]
-        F2["Flexibility"]
-        F3["Ease of Use"]
-        F4["Testability"]
-        F5["Audit Trail"]
-    end
-    
-    subgraph Scores ["Scores out of 10"]
-        ACL_S["ACL: 2, 2, 10, 5, 4"]
-        RBAC_S["RBAC: 8, 5, 9, 6, 6"]
-        ABAC_S["ABAC: 7, 9, 3, 4, 5"]
-        ReBAC_S["ReBAC: 8, 8, 7, 7, 7"]
-        Policy_S["Policy: 9, 10, 4, 10, 10"]
-    end
-    
-    style Features fill:#F0F0F0
-    style Scores fill:#FFFACD
-```
-
-## When to Use Each
-
-| Model | Best For | Example | Gotchas |
-|-------|----------|---------|---------|
-| **ACL** | Tiny systems, file perms | Unix chmod, basic WordPress | Doesn't scale |
-| **RBAC** | Most SaaS apps | Admin/Editor/Viewer roles | No context (time, location, etc.) |
-| **RBAC+ABAC** | Medium complexity | Healthcare + time-based access | Policy sprawl if too many attributes |
-| **ABAC** | Complex rules | Enterprise data classification | Hard to manage, easy to misconfigure |
-| **ReBAC** | Graph relationships | Figma, Google Docs, Slack | Need graph DB expertise |
-| **Policy-as-Code** | Highly regulated | Kubernetes, financial services | Overkill for simple apps, steep learning curve |
-
-## Usage in GitHub
-
-Paste any diagram into your `.md` file.
-
-**Key takeaways:**
-- ✅ **Start with RBAC** — simplest for most apps
-- ➕ **Add ABAC** when you need context (time, location, IP)
-- 🔗 **Use ReBAC** when permissions follow graph relationships (owner, collaborator, parent)
-- ⚙️ **Use Policy-as-Code** for highly regulated systems with audit requirements
-
-### ACL (Access Control List)
+### 14.4 ACL (Access Control List)
 **Definition.** A per-resource list of who can do what: `file.txt → {alice: read, bob: write}`. Simple and granular, but doesn't scale to millions of resources × users.
+```
+chmod 644 document.txt   # rw- r-- r--  →  owner: read+write, group: read, others: read
+```
 
-### RBAC (Role-Based Access Control) — the workhorse
+### 14.5 RBAC (Role-Based Access Control) — the workhorse
 **Definition.** Users get **roles**; roles carry **permissions**. You assign roles, not individual permissions.
 ```
 User → Role(s) → Permissions → Resources
@@ -1133,7 +929,7 @@ alice → "editor" → {posts.create, posts.edit}
 - ❌ **Role explosion** — when you need "editors, but only in marketing, only during business hours," you end up minting `marketing-editor-business-hours` roles. The classic failure that pushes teams to ABAC.
 - **Use it when:** roles are clear and stable (most small/medium apps). Start here.
 
-### ABAC (Attribute-Based Access Control) — flexible & contextual
+### 14.6 ABAC (Attribute-Based Access Control) — flexible & contextual
 **Definition.** Decisions come from **attributes** of the user, resource, action, and environment, evaluated by a policy.
 ```
 ALLOW if user.department == resource.department
@@ -1145,19 +941,34 @@ ALLOW if user.department == resource.department
 - ❌ Harder to reason about/audit ("why *can* Alice see this?"). Needs a policy engine.
 - **Use it when:** context matters (time, location, ownership, data sensitivity).
 
-### ReBAC (Relationship-Based Access Control) — Google Zanzibar model
+### 14.7 ReBAC (Relationship-Based Access Control) — Google Zanzibar model
 **Definition.** Permissions come from **relationships** in a graph: "you can edit a doc if you own it, or belong to a group with editor access to its parent folder." (**Zanzibar** = Google's internal authorization system that inspired this.)
-- Powers Google Drive, GitHub, Notion-style sharing.
+```
+edge: alice -[owner]-> doc1
+edge: bob   -[collaborator]-> doc1
+query: doc1.can_edit?  → who has an [owner] or [editor] edge to doc1?
+```
+- Powers Google Drive, GitHub, Notion-style sharing, Figma, Slack.
 - Open-source implementations: **SpiceDB, OpenFGA, Ory Keto.**
 - **Use it when:** nested sharing/hierarchies ("who has access to this document?").
 
-### PBAC / Policy-as-Code
+### 14.8 PBAC / Policy-as-Code
 **Definition.** Move authorization out of app code into a dedicated **policy engine**, so the app just asks "can X do Y on Z?"
-- **OPA** (Open Policy Agent) + **Rego** (its policy language) — a CNCF standard, great for infra/Kubernetes + app authz.
+```rego
+allow {
+  input.user.role == "admin"
+  input.resource.type == "secret"
+  input.action == "read"
+  input.time < input.resource.expiry
+}
+```
+- **OPA** (Open Policy Agent) + **Rego** (its policy language) — a **CNCF** (Cloud Native Computing Foundation) standard, great for infra/Kubernetes (pod security, network policy, resource quotas) + app authz.
 - **AWS Cedar** — a purpose-built authz language (powers Amazon Verified Permissions).
-- **Oso, Casbin** — embeddable libraries.
+- **Oso, Casbin** — embeddable libraries. **HashiCorp Sentinel** — policy guardrails on Terraform runs.
+- **Use it when:** many services need one consistent, testable, auditable policy.
 
-**The PDP/PEP/PAP mental model** (worth knowing for interviews):
+### 14.9 The PDP/PEP/PAP Mental Model
+Worth knowing for interviews — this is how policy-as-code engines like OPA decompose the problem:
 ```
 PEP (Policy Enforcement Point) — intercepts the request (your API middleware)
 PDP (Policy Decision Point)    — evaluates policy, returns allow/deny (e.g., OPA)
@@ -1165,7 +976,7 @@ PAP (Policy Administration Point) — where policies are authored
 PIP (Policy Information Point)  — supplies attributes (user dept, resource owner)
 ```
 
-### Decision guide
+### 14.10 Decision Guide
 - **Clear roles, small/medium app** → **RBAC**.
 - **Need context** → **ABAC** (usually RBAC+ABAC hybrid).
 - **Sharing/nesting** → **ReBAC** (SpiceDB/OpenFGA).
@@ -1247,7 +1058,7 @@ Your App ──OIDC──► Okta/Auth0 (acts as IdP) ──SAML/OIDC──► u
 
 **Where it's used.** Modern enterprise security, remote/hybrid work, cloud-native architectures.
 - Enforced via **mTLS** everywhere, short-lived credentials, per-request authorization (OPA), device attestation, continuous verification.
-- Google **BeyondCorp** is the canonical implementation. Service meshes (Istio) provide mTLS + service identity relatively cheaply.
+- Google **BeyondCorp** (Google's own Zero Trust access model, productized as BeyondCorp Enterprise) is the canonical implementation. Service meshes (Istio) provide mTLS + service identity relatively cheaply.
 
 > 📺 **Watch:** [Finally Understand AWS IAM — Users, Roles, Policies & Trust](https://www.youtube.com/watch?v=I_Uh1ra3RYU) · [Zero Trust Explained in 4 mins — IBM](https://www.youtube.com/watch?v=yn6CPQ9RioA)
 
@@ -1259,12 +1070,12 @@ Your App ──OIDC──► Okta/Auth0 (acts as IdP) ──SAML/OIDC──► u
 ### JWT / OAuth / OIDC
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `401` with a fresh token | Wrong `aud`/`iss`, or clock skew (`exp` fails) | Match `aud`/`iss`; sync clocks via NTP; allow small `leeway` |
+| `401` with a fresh token | Wrong `aud`/`iss`, or clock skew (`exp` fails) | Match `aud`/`iss`; sync clocks via **NTP** (Network Time Protocol); allow small `leeway` |
 | Signature verification fails intermittently | Key rotated; old JWKS cached | Refresh JWKS on an unknown `kid`; cache with sane TTL |
 | Works, then 401 mid-session | Access token expired | Implement refresh-token flow |
 | `redirect_uri_mismatch` | Registered URI ≠ sent one (trailing slash, http vs https, port) | Exact-match the registered callback |
 | `invalid_grant` on token exchange | Code already used/expired, or PKCE verifier mismatch | Codes are single-use & short-lived; check verifier↔challenge |
-| CORS error on token endpoint from SPA | Calling a back-channel endpoint from the browser | Use Auth Code + PKCE correctly; some endpoints aren't CORS-enabled by design |
+| **CORS** (Cross-Origin Resource Sharing) error on token endpoint from SPA | Calling a back-channel endpoint from the browser | Use Auth Code + PKCE correctly; some endpoints aren't CORS-enabled by design |
 | Infinite redirect loop | Session cookie not set (SameSite/Secure), or clock skew | Fix cookie flags (`SameSite=None; Secure` for cross-site) |
 
 ### TLS / Certificates
