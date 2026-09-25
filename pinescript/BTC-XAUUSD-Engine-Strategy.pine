@@ -169,11 +169,15 @@ type Trade
     int    wins   = 0
     int    losses = 0
     int    signals = 0
+    int    last_time = 0
     array<int> blocked
 
 // Returns true on the bar a new trade is locked in.
-method step(Trade t, bool is_new, bool signal, int blocker, int cur_dir, float h, float l, float entry, float sl, float tp1, float tp2, float tp3, float zl, float zh, string ztype) =>
+method step(Trade t, int asset_time, bool signal, int blocker, int cur_dir, float h, float l, float entry, float sl, float tp1, float tp2, float tp3, float zl, float zh, string ztype) =>
     bool triggered = false
+    bool is_new = barstate.isconfirmed and not na(asset_time) and asset_time > t.last_time
+    if is_new
+        t.last_time := asset_time
     if na(t.blocked)
         t.blocked := array.new<int>(6, 0)
     if is_new and blocker > 0
@@ -267,9 +271,7 @@ method alert_msg(Trade t, string tkr, float mt) =>
 [xau_c, xau_o, xau_h, xau_l, xau_time, xau_atr, xau_ema20, xau_ema50, xau_vwap, xau_rsi, xau_roc, xau_sma5, xau_vol, xau_bh, xau_bl, xau_swl, xau_swh, xau_mt] = request.security(xau_ticker, timeframe.period, f_engine())
 spy_roc = request.security(spy_ticker, timeframe.period, ta.roc(close, 10))
 
-// A chart bar only counts for an asset when that asset actually printed a new bar
-bool btc_new = not na(btc_time) and (na(btc_time[1]) or btc_time != btc_time[1])
-bool xau_new = not na(xau_time) and (na(xau_time[1]) or xau_time != xau_time[1])
+// A chart bar only counts for an asset when that asset printed a new bar (checked inside step() via the asset's bar time)
 
 [btc_dir, btc_trend, btc_mom, btc_ztype, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_rr, btc_risk_p, btc_rew_p, btc_score, btc_grade, btc_signal, btc_blocker] = f_setup(btc_c, btc_o, btc_atr, btc_ema20, btc_ema50, btc_vwap, btc_rsi, btc_roc, btc_sma5, btc_vol, btc_bh, btc_bl, btc_swl, btc_swh, btc_mt)
 [xau_dir, xau_trend, xau_mom, xau_ztype, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_rr, xau_risk_p, xau_rew_p, xau_score, xau_grade, xau_signal, xau_blocker] = f_setup(xau_c, xau_o, xau_atr, xau_ema20, xau_ema50, xau_vwap, xau_rsi, xau_roc, xau_sma5, xau_vol, xau_bh, xau_bl, xau_swl, xau_swh, xau_mt)
@@ -277,8 +279,8 @@ bool xau_new = not na(xau_time) and (na(xau_time[1]) or xau_time != xau_time[1])
 var Trade btc_t = Trade.new()
 var Trade xau_t = Trade.new()
 
-bool btc_trig = btc_t.step(btc_new, btc_signal, btc_blocker, btc_dir, btc_h, btc_l, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_ztype)
-bool xau_trig = xau_t.step(xau_new, xau_signal, xau_blocker, xau_dir, xau_h, xau_l, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_ztype)
+bool btc_trig = btc_t.step(btc_time, btc_signal, btc_blocker, btc_dir, btc_h, btc_l, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_ztype)
+bool xau_trig = xau_t.step(xau_time, xau_signal, xau_blocker, xau_dir, xau_h, xau_l, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_ztype)
 
 btc_rs = btc_roc - spy_roc   // SPY uses its last available bar outside US market hours
 xau_rs = xau_roc - spy_roc
@@ -315,6 +317,7 @@ if trade_on and barstate.isconfirmed
         float qty_risk  = risk_unit > 0 ? strategy.equity * risk_pct / 100 / risk_unit : 0.0
         float qty_cap   = strategy.equity * max_pos_pct / 100 / (tt.entry * syminfo.pointvalue)
         float qty       = math.max(math.min(qty_risk, qty_cap), 0.0)
+        log.info("{0} signal: entry {1} sl {2} tp1 {3} qty {4}", tt.dir == 1 ? "BUY" : "SELL", tt.entry, tt.sl, tt.tp1, qty)
         if qty > 0
             strategy.entry(tt.dir == 1 ? long_id : short_id, tt.dir == 1 ? strategy.long : strategy.short, qty = qty, limit = tt.entry, comment = tt.ztype)
 
@@ -326,6 +329,11 @@ if trade_on and barstate.isconfirmed
         if tt.state <= 3 and tp2_qty > 0
             strategy.exit(eid + " TP2", from_entry = eid, qty_percent = tp2_qty, limit = tt.tp2, stop = tt.sl, comment_profit = "TP2", comment_loss = "SL")
         strategy.exit(eid + " TP3", from_entry = eid, limit = tt.tp3, stop = tt.sl, comment_profit = "TP3", comment_loss = "SL")
+
+// Signal markers for the chart asset (drawn even when order execution is off)
+bool chart_trig = (chart_is_btc or chart_is_xau) and tt_trig
+plotshape(chart_trig and tt.dir == 1,  "Buy Signal",  shape.triangleup,   location.belowbar, color.green, size = size.small)
+plotshape(chart_trig and tt.dir == -1, "Sell Signal", shape.triangledown, location.abovebar, color.red,   size = size.small)
 
 // Chart levels for the traded asset
 bool show_lv = trade_on and tt.is_active()
@@ -377,7 +385,7 @@ f_rr_txt(float rr, float risk_p, float rew_p) =>
 if barstate.isfirst
     table.merge_cells(dash, 0, 0, 2, 0)
 
-if barstate.islast and show_dash
+if (barstate.islast or barstate.islastconfirmedhistory) and show_dash
     t_size = table_size == "Tiny" ? size.tiny : table_size == "Small" ? size.small : size.normal
 
     // Idle -> live levels; locked/finished trade -> locked levels
