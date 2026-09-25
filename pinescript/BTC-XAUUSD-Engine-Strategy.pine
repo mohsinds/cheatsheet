@@ -1,0 +1,402 @@
+//@version=6
+strategy("BTC-XAUUSD ENGINE", overlay = true, pyramiding = 0, initial_capital = 10000,
+     default_qty_type = strategy.fixed, default_qty_value = 1,
+     commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 2,
+     calc_on_every_tick = false, process_orders_on_close = false)
+
+// ==========================================
+// USER INPUTS & SETTINGS
+// ==========================================
+show_dash    = input.bool(true, "Show Dashboard", group = "Dashboard Settings")
+dash_loc     = input.string("Top Right", "Dashboard Position", options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group = "Dashboard Settings")
+table_size   = input.string("Small", "Table Size", options = ["Tiny", "Small", "Normal"], group = "Dashboard Settings")
+
+btc_ticker   = input.symbol("BITSTAMP:BTCUSD", "BTC Ticker", group = "Asset Settings")
+xau_ticker   = input.symbol("OANDA:XAUUSD", "Gold Ticker", group = "Asset Settings")
+spy_ticker   = input.symbol("AMEX:SPY", "SPY Ticker (for RS)", group = "Asset Settings")
+
+min_score    = input.int(70, "Min Score to Trigger", minval = 40, maxval = 100, step = 5, group = "Signal Filters")
+min_rr       = input.float(1.0, "Min R:R (to TP1) to Trigger", minval = 0.1, step = 0.1, group = "Signal Filters")
+vol_min      = input.float(1.1, "Min Volume Surge", minval = 0.0, step = 0.1, group = "Signal Filters")
+entry_expiry = input.int(10, "Cancel Unfilled Entry After (bars)", minval = 1, group = "Signal Filters")
+
+sl_lookback  = input.int(10, "Stop: Swing Lookback (bars)", minval = 2, group = "Stops & Targets")
+sl_buffer    = input.float(0.2, "Stop: Buffer Beyond Swing (ATR)", minval = 0.0, step = 0.05, group = "Stops & Targets")
+sl_min_atr   = input.float(0.8, "Stop: Min Distance (ATR)", minval = 0.1, step = 0.1, group = "Stops & Targets")
+sl_max_atr   = input.float(2.5, "Stop: Max Distance (ATR)", minval = 0.2, step = 0.1, group = "Stops & Targets")
+tp1_atr      = input.float(1.5, "TP1 (ATR)", minval = 0.1, step = 0.1, group = "Stops & Targets")
+tp2_atr      = input.float(2.5, "TP2 (ATR)", minval = 0.1, step = 0.1, group = "Stops & Targets")
+tp3_atr      = input.float(3.5, "TP3 (ATR)", minval = 0.1, step = 0.1, group = "Stops & Targets")
+trail_stop   = input.bool(true, "Move SL to Breakeven after TP1, to TP1 after TP2", group = "Stops & Targets")
+
+enable_trade = input.bool(true, "Execute Orders for Chart Symbol (must be BTC or Gold ticker)", group = "Strategy Execution")
+risk_pct     = input.float(1.0, "Risk per Trade (% of equity)", minval = 0.1, maxval = 10, step = 0.1, group = "Strategy Execution")
+max_pos_pct  = input.float(100, "Max Position Size (% of equity)", minval = 1, maxval = 1000, group = "Strategy Execution")
+tp1_qty      = input.int(33, "Close at TP1 (% of position)", minval = 0, maxval = 100, group = "Strategy Execution")
+tp2_qty      = input.int(33, "Close at TP2 (% of position)", minval = 0, maxval = 100, group = "Strategy Execution", tooltip = "Whatever is left after TP1 + TP2 closes at TP3.")
+
+// ==========================================
+// HELPERS
+// ==========================================
+f_round(float x, float mt) => mt > 0 ? math.round(x / mt) * mt : x
+
+// Decimal places of a tick size (0.01 -> 2, 0.25 -> 2, 1 -> 0)
+f_dec(float mt) =>
+    int   d = 0
+    float m = nz(mt, 0.01)
+    while d < 8 and math.abs(m - math.round(m)) > 1e-9
+        m *= 10
+        d += 1
+    d
+
+f_fmt(float x, float mt) =>
+    int d = f_dec(mt)
+    na(x) ? "—" : str.tostring(x, d == 0 ? "0" : "0." + str.repeat("0", d))
+
+f_base(string tkr) =>
+    parts = str.split(tkr, ":")
+    array.get(parts, array.size(parts) - 1)
+
+// ==========================================
+// PER-ASSET RAW DATA (runs inside the asset's own security context)
+// Every ta.* call is evaluated on the asset's own bars, so gold/SPY closed
+// hours on a 24/7 BTC chart no longer feed repeated bars into EMAs/RSI/volume,
+// and VWAP is weighted by the asset's own volume and session.
+// ==========================================
+f_engine() =>
+    atr       = ta.atr(14)
+    ema20     = ta.ema(close, 20)
+    ema50     = ta.ema(close, 50)
+    vwap_v    = ta.vwap(hlc3)
+    rsi       = ta.rsi(close, 14)
+    roc       = ta.roc(close, 10)
+    sma5      = ta.sma(close, 5)
+    vol_sma   = ta.sma(volume, 20)
+    vol_surge = vol_sma > 0 ? volume / vol_sma : 1.0
+    brk_high  = ta.highest(high, 20)[1]
+    brk_low   = ta.lowest(low, 20)[1]
+    sw_low    = ta.lowest(low, sl_lookback)
+    sw_high   = ta.highest(high, sl_lookback)
+    [close, open, high, low, time, atr, ema20, ema50, vwap_v, rsi, roc, sma5, vol_surge, brk_high, brk_low, sw_low, sw_high, syminfo.mintick]
+
+// ==========================================
+// SETUP / LEVELS / SCORE (pure arithmetic, no ta.* calls -> safe under lazy evaluation)
+// ==========================================
+f_setup(float c, float o, float atr, float ema20, float ema50, float vwap_v, float rsi, float roc, float sma5, float vol_surge, float brk_high, float brk_low, float sw_low, float sw_high, float mt) =>
+    is_up = c > ema20 and ema20 > ema50
+    is_dn = c < ema20 and ema20 < ema50
+    int dir = is_up ? 1 : is_dn ? -1 : 0
+    string trend_str = is_up ? (c > ema20 * 1.02 ? "V.STRONG" : "STRONG") : is_dn ? (c < ema20 * 0.98 ? "V.WEAK" : "WEAK") : "NEUTRAL"
+
+    int mom = int(math.min(math.max((rsi + (roc > 0 ? 50 : 25)) / 1.5, 0), 100))
+
+    bool is_brk = (dir == 1 and c > brk_high) or (dir == -1 and c < brk_low) or (dir != 0 and vol_surge > 1.3 and math.abs(c - ema20) > atr * 0.8)
+    string ztype = dir == 0 ? "No Trend" : is_brk ? "Structure Break" : "Retest/Pullback"
+
+    float entry = na
+    float sl    = na
+    float tp1   = na
+    float tp2   = na
+    float tp3   = na
+    float zl    = na
+    float zh    = na
+    if dir != 0
+        // Pullback entries sit at EMA20 but never on the wrong side of the current close
+        raw_entry = is_brk ? c : dir == 1 ? math.min(c, ema20 + atr * 0.1) : math.max(c, ema20 - atr * 0.1)
+        entry := f_round(raw_entry, mt)
+        // Structure-based stop beyond the recent swing, clamped to a sane ATR range
+        raw_sl  = dir == 1 ? sw_low - atr * sl_buffer : sw_high + atr * sl_buffer
+        dist    = dir == 1 ? entry - raw_sl : raw_sl - entry
+        dist_c  = math.min(math.max(dist, atr * sl_min_atr), atr * sl_max_atr)
+        sl  := f_round(entry - dir * dist_c, mt)
+        tp1 := f_round(entry + dir * atr * tp1_atr, mt)
+        tp2 := f_round(entry + dir * atr * tp2_atr, mt)
+        tp3 := f_round(entry + dir * atr * tp3_atr, mt)
+        // Tight, direction-aware zone around the entry
+        zl  := f_round(dir == 1 ? entry - atr * 0.5 : entry - atr * 0.25, mt)
+        zh  := f_round(dir == 1 ? entry + atr * 0.25 : entry + atr * 0.5, mt)
+
+    risk     = math.abs(entry - sl)
+    reward   = math.abs(tp1 - entry)
+    rr       = risk > 0 ? reward / risk : na
+    risk_p   = entry > 0 ? risk / entry * 100 : na
+    reward_p = entry > 0 ? reward / entry * 100 : na
+
+    bool vwap_ok = na(vwap_v) or (dir == 1 ? c >= vwap_v : dir == -1 ? c <= vwap_v : false)
+
+    // Score 40..100: every component is direction-aware
+    int score = 40
+    if dir != 0
+        score += 15
+    if (dir == 1 and mom > 55) or (dir == -1 and mom < 45)
+        score += 15
+    if dir != 0 and vol_surge > 1.2
+        score += 10
+    if dir != 0 and vwap_ok
+        score += 10
+    if (dir == 1 and sma5 > ema20) or (dir == -1 and sma5 < ema20)
+        score += 10
+    string grade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B+" : score >= 60 ? "B" : "C"
+
+    bool candle_ok = dir == 1 ? c > o : dir == -1 ? c < o : false
+    bool signal = dir != 0 and candle_ok and vwap_ok and vol_surge >= vol_min and score >= min_score and nz(rr) >= min_rr
+
+    [dir, trend_str, mom, ztype, entry, sl, tp1, tp2, tp3, zl, zh, rr, risk_p, reward_p, score, grade, signal]
+
+// ==========================================
+// TRADE LIFECYCLE (one object per asset)
+// 0 SCANNING | 1 WAITING ENTRY | 2 ACTIVE | 3 TP1 | 4 TP2 | 5 COMPLETED | 6 STOP LOSS | 7 INVALID
+// 5/6/7 stay on screen until the next signal.
+// ==========================================
+type Trade
+    int    state = 0
+    int    dir   = 0
+    float  entry
+    float  sl
+    float  tp1
+    float  tp2
+    float  tp3
+    float  zl
+    float  zh
+    string ztype = ""
+    int    bars_waiting = 0
+    int    wins   = 0
+    int    losses = 0
+
+// Returns true on the bar a new trade is locked in.
+method step(Trade t, bool is_new, bool signal, int cur_dir, float h, float l, float entry, float sl, float tp1, float tp2, float tp3, float zl, float zh, string ztype) =>
+    bool triggered = false
+    if is_new
+        // 1) Waiting for the limit entry: longs fill when price trades DOWN to entry, shorts when it trades UP
+        if t.state == 1
+            if (t.dir == 1 and l <= t.entry) or (t.dir == -1 and h >= t.entry)
+                t.state := 2
+            else
+                t.bars_waiting := t.bars_waiting + 1
+                if t.bars_waiting >= entry_expiry or cur_dir != t.dir
+                    t.state := 7
+
+        // 2) Manage the open trade (also on the fill bar); SL is checked first = conservative
+        if t.state >= 2 and t.state <= 4
+            bool sl_hit  = t.dir == 1 ? l <= t.sl  : h >= t.sl
+            bool tp3_hit = t.dir == 1 ? h >= t.tp3 : l <= t.tp3
+            bool tp2_hit = t.dir == 1 ? h >= t.tp2 : l <= t.tp2
+            bool tp1_hit = t.dir == 1 ? h >= t.tp1 : l <= t.tp1
+            if sl_hit
+                if t.state >= 3
+                    t.wins := t.wins + 1
+                else
+                    t.losses := t.losses + 1
+                t.state := 6
+            else if tp3_hit
+                t.wins  := t.wins + 1
+                t.state := 5
+            else if tp2_hit and t.state < 4
+                t.state := 4
+            else if tp1_hit and t.state < 3
+                t.state := 3
+            // Protect profits for the following bars
+            if trail_stop
+                if t.state == 3
+                    t.sl := t.entry
+                else if t.state == 4
+                    t.sl := t.tp1
+
+        // 3) Idle (scanning or finished) -> lock a new trade on a confirmed signal
+        if (t.state == 0 or t.state >= 5) and signal
+            t.state        := 1
+            t.dir          := cur_dir
+            t.entry        := entry
+            t.sl           := sl
+            t.tp1          := tp1
+            t.tp2          := tp2
+            t.tp3          := tp3
+            t.zl           := zl
+            t.zh           := zh
+            t.ztype        := ztype
+            t.bars_waiting := 0
+            triggered      := true
+    triggered
+
+method is_active(Trade t) => t.state >= 1 and t.state <= 4
+
+method status(Trade t) =>
+    switch t.state
+        1 => t.dir == 1 ? "🟢 WAITING BUY" : "🔴 WAITING SELL"
+        2 => t.dir == 1 ? "🟢 LONG ACTIVE" : "🔴 SHORT ACTIVE"
+        3 => trail_stop ? "🟡 TP1 HIT (SL→BE)" : "🟡 TP1 HIT"
+        4 => trail_stop ? "🟠 TP2 HIT (SL→TP1)" : "🟠 TP2 HIT"
+        5 => "✅ COMPLETED · SCANNING"
+        6 => "🔴 STOPPED · SCANNING"
+        7 => "⚫ INVALID · SCANNING"
+        => "🔍 SCANNING"
+
+method status_color(Trade t) =>
+    switch t.state
+        1 => t.dir == 1 ? color.green : color.red
+        2 => color.blue
+        3 => color.yellow
+        4 => color.orange
+        5 => color.green
+        6 => color.red
+        7 => color.gray
+        => color.teal
+
+method alert_msg(Trade t, string tkr, float mt) =>
+    "🚀 BTC-XAUUSD ENGINE ALERT\nAsset: " + tkr + "\nDirection: " + (t.dir == 1 ? "BUY" : "SELL") + "\nSetup Type: " + t.ztype +
+     "\nEntry (limit): " + f_fmt(t.entry, mt) + "\nZone: " + f_fmt(t.zl, mt) + " - " + f_fmt(t.zh, mt) +
+     "\nStop Loss: " + f_fmt(t.sl, mt) + "\nTP1: " + f_fmt(t.tp1, mt) + "\nTP2: " + f_fmt(t.tp2, mt) + "\nTP3: " + f_fmt(t.tp3, mt)
+
+// ==========================================
+// DATA + ENGINE PER ASSET
+// ==========================================
+[btc_c, btc_o, btc_h, btc_l, btc_time, btc_atr, btc_ema20, btc_ema50, btc_vwap, btc_rsi, btc_roc, btc_sma5, btc_vol, btc_bh, btc_bl, btc_swl, btc_swh, btc_mt] = request.security(btc_ticker, timeframe.period, f_engine())
+[xau_c, xau_o, xau_h, xau_l, xau_time, xau_atr, xau_ema20, xau_ema50, xau_vwap, xau_rsi, xau_roc, xau_sma5, xau_vol, xau_bh, xau_bl, xau_swl, xau_swh, xau_mt] = request.security(xau_ticker, timeframe.period, f_engine())
+spy_roc = request.security(spy_ticker, timeframe.period, ta.roc(close, 10))
+
+// A chart bar only counts for an asset when that asset actually printed a new bar
+bool btc_new = not na(btc_time) and (na(btc_time[1]) or btc_time != btc_time[1])
+bool xau_new = not na(xau_time) and (na(xau_time[1]) or xau_time != xau_time[1])
+
+[btc_dir, btc_trend, btc_mom, btc_ztype, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_rr, btc_risk_p, btc_rew_p, btc_score, btc_grade, btc_signal] = f_setup(btc_c, btc_o, btc_atr, btc_ema20, btc_ema50, btc_vwap, btc_rsi, btc_roc, btc_sma5, btc_vol, btc_bh, btc_bl, btc_swl, btc_swh, btc_mt)
+[xau_dir, xau_trend, xau_mom, xau_ztype, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_rr, xau_risk_p, xau_rew_p, xau_score, xau_grade, xau_signal] = f_setup(xau_c, xau_o, xau_atr, xau_ema20, xau_ema50, xau_vwap, xau_rsi, xau_roc, xau_sma5, xau_vol, xau_bh, xau_bl, xau_swl, xau_swh, xau_mt)
+
+var Trade btc_t = Trade.new()
+var Trade xau_t = Trade.new()
+
+bool btc_trig = btc_t.step(btc_new, btc_signal, btc_dir, btc_h, btc_l, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_ztype)
+bool xau_trig = xau_t.step(xau_new, xau_signal, xau_dir, xau_h, xau_l, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_ztype)
+
+btc_rs = btc_roc - spy_roc   // SPY uses its last available bar outside US market hours
+xau_rs = xau_roc - spy_roc
+
+total_active_trades = (btc_t.is_active() ? 1 : 0) + (xau_t.is_active() ? 1 : 0)
+
+// ==========================================
+// STRATEGY EXECUTION (the chart symbol only — Pine can't route orders to another symbol)
+// ==========================================
+string chart_id    = syminfo.prefix + ":" + syminfo.ticker
+bool   chart_is_btc = chart_id == btc_ticker or syminfo.ticker == f_base(btc_ticker)
+bool   chart_is_xau = not chart_is_btc and (chart_id == xau_ticker or syminfo.ticker == f_base(xau_ticker))
+bool   trade_on     = enable_trade and (chart_is_btc or chart_is_xau)
+string exec_name    = not enable_trade ? "OFF" : chart_is_btc ? "BTC" : chart_is_xau ? "XAU" : "NONE (chart ≠ BTC/XAU)"
+
+Trade tt      = chart_is_btc ? btc_t : xau_t
+bool  tt_trig = chart_is_btc ? btc_trig : xau_trig
+
+if trade_on and barstate.isconfirmed
+    string long_id  = "Long"
+    string short_id = "Short"
+
+    // Keep the broker emulator in sync with the lifecycle if they ever diverge
+    if strategy.position_size != 0 and (tt_trig or tt.state == 0 or tt.state >= 5)
+        strategy.close_all(comment = "Sync")
+
+    if tt.state == 7 or tt.state == 0
+        strategy.cancel(long_id)
+        strategy.cancel(short_id)
+
+    if tt_trig
+        strategy.cancel_all()
+        float risk_unit = math.abs(tt.entry - tt.sl) * syminfo.pointvalue
+        float qty_risk  = risk_unit > 0 ? strategy.equity * risk_pct / 100 / risk_unit : 0.0
+        float qty_cap   = strategy.equity * max_pos_pct / 100 / (tt.entry * syminfo.pointvalue)
+        float qty       = math.max(math.min(qty_risk, qty_cap), 0.0)
+        if qty > 0
+            strategy.entry(tt.dir == 1 ? long_id : short_id, tt.dir == 1 ? strategy.long : strategy.short, qty = qty, limit = tt.entry, comment = tt.ztype)
+
+    // (Re)issue exits every bar so the stop follows breakeven / TP1 moves
+    if tt.is_active()
+        string eid = tt.dir == 1 ? long_id : short_id
+        if tt.state <= 2 and tp1_qty > 0
+            strategy.exit(eid + " TP1", from_entry = eid, qty_percent = tp1_qty, limit = tt.tp1, stop = tt.sl, comment_profit = "TP1", comment_loss = "SL")
+        if tt.state <= 3 and tp2_qty > 0
+            strategy.exit(eid + " TP2", from_entry = eid, qty_percent = tp2_qty, limit = tt.tp2, stop = tt.sl, comment_profit = "TP2", comment_loss = "SL")
+        strategy.exit(eid + " TP3", from_entry = eid, limit = tt.tp3, stop = tt.sl, comment_profit = "TP3", comment_loss = "SL")
+
+// Chart levels for the traded asset
+bool show_lv = trade_on and tt.is_active()
+plot(show_lv ? tt.entry : na, "Entry", color.blue,  1, plot.style_linebr)
+plot(show_lv ? tt.sl    : na, "Stop",  color.red,   2, plot.style_linebr)
+plot(show_lv ? tt.tp1   : na, "TP1",   color.green, 1, plot.style_linebr)
+plot(show_lv ? tt.tp2   : na, "TP2",   color.green, 1, plot.style_linebr)
+plot(show_lv ? tt.tp3   : na, "TP3",   color.green, 1, plot.style_linebr)
+
+// ==========================================
+// ALERTS (confirmed bars only -> no alerts for signals that vanish intrabar)
+// Create with "Any alert() function call".
+// ==========================================
+if barstate.isconfirmed
+    if btc_trig
+        alert(btc_t.alert_msg(btc_ticker, btc_mt), alert.freq_once_per_bar_close)
+    if xau_trig
+        alert(xau_t.alert_msg(xau_ticker, xau_mt), alert.freq_once_per_bar_close)
+
+// ==========================================
+// DASHBOARD (3-column vertical layout)
+// ==========================================
+var table dash = table.new(
+     position = dash_loc == "Top Right" ? position.top_right : dash_loc == "Bottom Right" ? position.bottom_right : dash_loc == "Top Left" ? position.top_left : position.bottom_left,
+     columns = 3,
+     rows = 16,
+     bgcolor = color.new(#131722, 0),
+     border_color = color.new(#2a2e39, 0),
+     border_width = 1)
+
+BG = color.new(#131722, 0)
+
+f_row(int r, string label, string b_txt, color b_col, string x_txt, color x_col, string t_size) =>
+    table.cell(dash, 0, r, label, text_color = color.silver, text_size = t_size, text_halign = text.align_left,   bgcolor = BG)
+    table.cell(dash, 1, r, b_txt, text_color = b_col,        text_size = t_size, text_halign = text.align_center, bgcolor = BG)
+    table.cell(dash, 2, r, x_txt, text_color = x_col,        text_size = t_size, text_halign = text.align_center, bgcolor = BG)
+
+f_trend_col(string s) => s == "V.STRONG" or s == "STRONG" ? color.green : s == "V.WEAK" or s == "WEAK" ? color.red : color.gray
+f_mom_col(int m) => m > 55 ? color.green : m < 45 ? color.red : color.yellow
+f_winrate(Trade t) =>
+    n = t.wins + t.losses
+    n > 0 ? str.tostring(float(t.wins) / n * 100, "0") + "% (" + str.tostring(t.wins) + "W/" + str.tostring(t.losses) + "L)" : "— (0 trades)"
+f_rr_txt(float rr, float risk_p, float rew_p) =>
+    na(rr) ? "—" : str.tostring(rr, "0.00") + "\nrisk " + str.tostring(risk_p, "0.00") + "% · TP1 +" + str.tostring(rew_p, "0.00") + "%"
+
+if barstate.isfirst
+    table.merge_cells(dash, 0, 0, 2, 0)
+
+if barstate.islast and show_dash
+    t_size = table_size == "Tiny" ? size.tiny : table_size == "Small" ? size.small : size.normal
+
+    // Idle -> live levels; locked/finished trade -> locked levels
+    bool btc_lock = btc_t.state != 0
+    bool xau_lock = xau_t.state != 0
+    b_entry = btc_lock ? btc_t.entry : btc_entry
+    b_sl    = btc_lock ? btc_t.sl    : btc_sl
+    b_tp1   = btc_lock ? btc_t.tp1   : btc_tp1
+    b_tp2   = btc_lock ? btc_t.tp2   : btc_tp2
+    b_tp3   = btc_lock ? btc_t.tp3   : btc_tp3
+    b_zl    = btc_lock ? btc_t.zl    : btc_zl
+    b_zh    = btc_lock ? btc_t.zh    : btc_zh
+    b_zt    = btc_lock ? btc_t.ztype : btc_ztype
+    x_entry = xau_lock ? xau_t.entry : xau_entry
+    x_sl    = xau_lock ? xau_t.sl    : xau_sl
+    x_tp1   = xau_lock ? xau_t.tp1   : xau_tp1
+    x_tp2   = xau_lock ? xau_t.tp2   : xau_tp2
+    x_tp3   = xau_lock ? xau_t.tp3   : xau_tp3
+    x_zl    = xau_lock ? xau_t.zl    : xau_zl
+    x_zh    = xau_lock ? xau_t.zh    : xau_zh
+    x_zt    = xau_lock ? xau_t.ztype : xau_ztype
+
+    table.cell(dash, 0, 0, "BTC-XAUUSD ENGINE  |  ACTIVE: " + str.tostring(total_active_trades) + "  |  EXECUTING: " + exec_name, text_color = color.white, text_size = t_size, bgcolor = color.new(#1e222d, 0), text_halign = text.align_center)
+    f_row(1,  "METRIC / HEADER", "BTCUSD", color.orange, "XAUUSD", color.yellow, t_size)
+    f_row(2,  "ASSET / TICKER", btc_ticker, color.white, xau_ticker, color.white, t_size)
+    f_row(3,  "TRADE STATUS", btc_t.status(), btc_t.status_color(), xau_t.status(), xau_t.status_color(), t_size)
+    f_row(4,  "PRICE", f_fmt(btc_c, btc_mt), btc_c >= btc_o ? color.green : color.red, f_fmt(xau_c, xau_mt), xau_c >= xau_o ? color.green : color.red, t_size)
+    f_row(5,  "SCORE / GRADE", str.tostring(btc_score) + " (" + btc_grade + ")", color.yellow, str.tostring(xau_score) + " (" + xau_grade + ")", color.yellow, t_size)
+    f_row(6,  "HIST WIN RATE", f_winrate(btc_t), color.yellow, f_winrate(xau_t), color.yellow, t_size)
+    f_row(7,  "BUY/SELL ZONE", f_fmt(b_zl, btc_mt) + " - " + f_fmt(b_zh, btc_mt) + "\n(" + b_zt + ")", color.white, f_fmt(x_zl, xau_mt) + " - " + f_fmt(x_zh, xau_mt) + "\n(" + x_zt + ")", color.white, t_size)
+    f_row(8,  "BEST ENTRY", f_fmt(b_entry, btc_mt), color.white, f_fmt(x_entry, xau_mt), color.white, t_size)
+    f_row(9,  "STOP LOSS", f_fmt(b_sl, btc_mt), color.red, f_fmt(x_sl, xau_mt), color.red, t_size)
+    f_row(10, "TARGETS (T1/T2/T3)", "T1: " + f_fmt(b_tp1, btc_mt) + "\nT2: " + f_fmt(b_tp2, btc_mt) + "\nT3: " + f_fmt(b_tp3, btc_mt), color.green, "T1: " + f_fmt(x_tp1, xau_mt) + "\nT2: " + f_fmt(x_tp2, xau_mt) + "\nT3: " + f_fmt(x_tp3, xau_mt), color.green, t_size)
+    f_row(11, "R:R (TP1)", f_rr_txt(btc_rr, btc_risk_p, btc_rew_p), color.white, f_rr_txt(xau_rr, xau_risk_p, xau_rew_p), color.white, t_size)
+    f_row(12, "MOMENTUM", str.tostring(btc_mom) + "/100", f_mom_col(btc_mom), str.tostring(xau_mom) + "/100", f_mom_col(xau_mom), t_size)
+    f_row(13, "TREND", btc_trend, f_trend_col(btc_trend), xau_trend, f_trend_col(xau_trend), t_size)
+    f_row(14, "VOL SURGE", str.tostring(btc_vol, "0.0") + "x", btc_vol >= vol_min ? color.green : color.white, str.tostring(xau_vol, "0.0") + "x", xau_vol >= vol_min ? color.green : color.white, t_size)
+    f_row(15, "RS vs SPY", (btc_rs >= 0 ? "+" : "") + str.tostring(btc_rs, "0.00") + "%", btc_rs >= 0 ? color.green : color.red, (xau_rs >= 0 ? "+" : "") + str.tostring(xau_rs, "0.00") + "%", xau_rs >= 0 ? color.green : color.red, t_size)
