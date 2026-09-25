@@ -1,8 +1,8 @@
 //@version=6
-strategy("BTC-XAUUSD ENGINE", overlay = true, pyramiding = 0, initial_capital = 10000,
-     default_qty_type = strategy.fixed, default_qty_value = 1,
-     commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 2,
-     calc_on_every_tick = false, process_orders_on_close = false)
+strategy("BTC-XAUUSD ENGINE", overlay = true, pyramiding = 0, initial_capital = 10000, default_qty_type = strategy.fixed, default_qty_value = 1, commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 2)
+
+// Unconditional global output so the compiler always sees at least one plot
+plot(close, "Chart Close", color = color.new(color.gray, 100), display = display.data_window)
 
 // ==========================================
 // USER INPUTS & SETTINGS
@@ -345,8 +345,8 @@ var table dash = table.new(
 
 BG = color.new(#131722, 0)
 
-f_row(int r, string label, string b_txt, color b_col, string x_txt, color x_col, string t_size) =>
-    table.cell(dash, 0, r, label, text_color = color.silver, text_size = t_size, text_halign = text.align_left,   bgcolor = BG)
+f_row(int r, string metric, string b_txt, color b_col, string x_txt, color x_col, string t_size) =>
+    table.cell(dash, 0, r, metric, text_color = color.silver, text_size = t_size, text_halign = text.align_left,   bgcolor = BG)
     table.cell(dash, 1, r, b_txt, text_color = b_col,        text_size = t_size, text_halign = text.align_center, bgcolor = BG)
     table.cell(dash, 2, r, x_txt, text_color = x_col,        text_size = t_size, text_halign = text.align_center, bgcolor = BG)
 
