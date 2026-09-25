@@ -72,7 +72,7 @@ f_engine() =>
     roc       = ta.roc(close, 10)
     sma5      = ta.sma(close, 5)
     vol_sma   = ta.sma(volume, 20)
-    vol_surge = vol_sma > 0 ? volume / vol_sma : 1.0
+    vol_surge = nz(vol_sma) > 0 ? nz(volume) / vol_sma : na   // na = feed has no volume
     brk_high  = ta.highest(high, 20)[1]
     brk_low   = ta.lowest(low, 20)[1]
     sw_low    = ta.lowest(low, sl_lookback)
@@ -130,7 +130,7 @@ f_setup(float c, float o, float atr, float ema20, float ema50, float vwap_v, flo
         score += 15
     if (dir == 1 and mom > 55) or (dir == -1 and mom < 45)
         score += 15
-    if dir != 0 and vol_surge > 1.2
+    if dir != 0 and nz(vol_surge) > 1.2
         score += 10
     if dir != 0 and vwap_ok
         score += 10
@@ -139,9 +139,15 @@ f_setup(float c, float o, float atr, float ema20, float ema50, float vwap_v, flo
     string grade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B+" : score >= 60 ? "B" : "C"
 
     bool candle_ok = dir == 1 ? c > o : dir == -1 ? c < o : false
-    bool signal = dir != 0 and candle_ok and vwap_ok and vol_surge >= vol_min and score >= min_score and nz(rr) >= min_rr
+    bool vol_ok    = na(vol_surge) or vol_surge >= vol_min
+    bool score_ok  = score >= min_score
+    bool rr_ok     = nz(rr) >= min_rr
+    bool signal    = dir != 0 and candle_ok and vwap_ok and vol_ok and score_ok and rr_ok
 
-    [dir, trend_str, mom, ztype, entry, sl, tp1, tp2, tp3, zl, zh, rr, risk_p, reward_p, score, grade, signal]
+    // First filter that blocked a trending bar (diagnostics): 0 none, 1 candle, 2 VWAP, 3 volume, 4 score, 5 R:R
+    int blocker = dir == 0 or signal ? 0 : not candle_ok ? 1 : not vwap_ok ? 2 : not vol_ok ? 3 : not score_ok ? 4 : 5
+
+    [dir, trend_str, mom, ztype, entry, sl, tp1, tp2, tp3, zl, zh, rr, risk_p, reward_p, score, grade, signal, blocker]
 
 // ==========================================
 // TRADE LIFECYCLE (one object per asset)
@@ -162,10 +168,16 @@ type Trade
     int    bars_waiting = 0
     int    wins   = 0
     int    losses = 0
+    int    signals = 0
+    array<int> blocked
 
 // Returns true on the bar a new trade is locked in.
-method step(Trade t, bool is_new, bool signal, int cur_dir, float h, float l, float entry, float sl, float tp1, float tp2, float tp3, float zl, float zh, string ztype) =>
+method step(Trade t, bool is_new, bool signal, int blocker, int cur_dir, float h, float l, float entry, float sl, float tp1, float tp2, float tp3, float zl, float zh, string ztype) =>
     bool triggered = false
+    if na(t.blocked)
+        t.blocked := array.new<int>(6, 0)
+    if is_new and blocker > 0
+        t.blocked.set(blocker, t.blocked.get(blocker) + 1)
     if is_new
         // 1) Waiting for the limit entry: longs fill when price trades DOWN to entry, shorts when it trades UP
         if t.state == 1
@@ -215,6 +227,7 @@ method step(Trade t, bool is_new, bool signal, int cur_dir, float h, float l, fl
             t.zh           := zh
             t.ztype        := ztype
             t.bars_waiting := 0
+            t.signals      := t.signals + 1
             triggered      := true
     triggered
 
@@ -258,14 +271,14 @@ spy_roc = request.security(spy_ticker, timeframe.period, ta.roc(close, 10))
 bool btc_new = not na(btc_time) and (na(btc_time[1]) or btc_time != btc_time[1])
 bool xau_new = not na(xau_time) and (na(xau_time[1]) or xau_time != xau_time[1])
 
-[btc_dir, btc_trend, btc_mom, btc_ztype, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_rr, btc_risk_p, btc_rew_p, btc_score, btc_grade, btc_signal] = f_setup(btc_c, btc_o, btc_atr, btc_ema20, btc_ema50, btc_vwap, btc_rsi, btc_roc, btc_sma5, btc_vol, btc_bh, btc_bl, btc_swl, btc_swh, btc_mt)
-[xau_dir, xau_trend, xau_mom, xau_ztype, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_rr, xau_risk_p, xau_rew_p, xau_score, xau_grade, xau_signal] = f_setup(xau_c, xau_o, xau_atr, xau_ema20, xau_ema50, xau_vwap, xau_rsi, xau_roc, xau_sma5, xau_vol, xau_bh, xau_bl, xau_swl, xau_swh, xau_mt)
+[btc_dir, btc_trend, btc_mom, btc_ztype, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_rr, btc_risk_p, btc_rew_p, btc_score, btc_grade, btc_signal, btc_blocker] = f_setup(btc_c, btc_o, btc_atr, btc_ema20, btc_ema50, btc_vwap, btc_rsi, btc_roc, btc_sma5, btc_vol, btc_bh, btc_bl, btc_swl, btc_swh, btc_mt)
+[xau_dir, xau_trend, xau_mom, xau_ztype, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_rr, xau_risk_p, xau_rew_p, xau_score, xau_grade, xau_signal, xau_blocker] = f_setup(xau_c, xau_o, xau_atr, xau_ema20, xau_ema50, xau_vwap, xau_rsi, xau_roc, xau_sma5, xau_vol, xau_bh, xau_bl, xau_swl, xau_swh, xau_mt)
 
 var Trade btc_t = Trade.new()
 var Trade xau_t = Trade.new()
 
-bool btc_trig = btc_t.step(btc_new, btc_signal, btc_dir, btc_h, btc_l, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_ztype)
-bool xau_trig = xau_t.step(xau_new, xau_signal, xau_dir, xau_h, xau_l, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_ztype)
+bool btc_trig = btc_t.step(btc_new, btc_signal, btc_blocker, btc_dir, btc_h, btc_l, btc_entry, btc_sl, btc_tp1, btc_tp2, btc_tp3, btc_zl, btc_zh, btc_ztype)
+bool xau_trig = xau_t.step(xau_new, xau_signal, xau_blocker, xau_dir, xau_h, xau_l, xau_entry, xau_sl, xau_tp1, xau_tp2, xau_tp3, xau_zl, xau_zh, xau_ztype)
 
 btc_rs = btc_roc - spy_roc   // SPY uses its last available bar outside US market hours
 xau_rs = xau_roc - spy_roc
@@ -338,7 +351,7 @@ if barstate.isconfirmed
 var table dash = table.new(
      position = dash_loc == "Top Right" ? position.top_right : dash_loc == "Bottom Right" ? position.bottom_right : dash_loc == "Top Left" ? position.top_left : position.bottom_left,
      columns = 3,
-     rows = 16,
+     rows = 17,
      bgcolor = color.new(#131722, 0),
      border_color = color.new(#2a2e39, 0),
      border_width = 1)
@@ -355,6 +368,9 @@ f_mom_col(int m) => m > 55 ? color.green : m < 45 ? color.red : color.yellow
 f_winrate(Trade t) =>
     n = t.wins + t.losses
     n > 0 ? str.tostring(float(t.wins) / n * 100, "0") + "% (" + str.tostring(t.wins) + "W/" + str.tostring(t.losses) + "L)" : "— (0 trades)"
+f_blocked(Trade t) =>
+    na(t.blocked) ? "—" : str.tostring(t.signals) + " signals\ncandle " + str.tostring(t.blocked.get(1)) + " · vwap " + str.tostring(t.blocked.get(2)) + "\nvol " + str.tostring(t.blocked.get(3)) + " · score " + str.tostring(t.blocked.get(4)) + " · rr " + str.tostring(t.blocked.get(5))
+f_vol_txt(float v) => na(v) ? "n/a (no volume)" : str.tostring(v, "0.0") + "x"
 f_rr_txt(float rr, float risk_p, float rew_p) =>
     na(rr) ? "—" : str.tostring(rr, "0.00") + "\nrisk " + str.tostring(risk_p, "0.00") + "% · TP1 +" + str.tostring(rew_p, "0.00") + "%"
 
@@ -398,5 +414,6 @@ if barstate.islast and show_dash
     f_row(11, "R:R (TP1)", f_rr_txt(btc_rr, btc_risk_p, btc_rew_p), color.white, f_rr_txt(xau_rr, xau_risk_p, xau_rew_p), color.white, t_size)
     f_row(12, "MOMENTUM", str.tostring(btc_mom) + "/100", f_mom_col(btc_mom), str.tostring(xau_mom) + "/100", f_mom_col(xau_mom), t_size)
     f_row(13, "TREND", btc_trend, f_trend_col(btc_trend), xau_trend, f_trend_col(xau_trend), t_size)
-    f_row(14, "VOL SURGE", str.tostring(btc_vol, "0.0") + "x", btc_vol >= vol_min ? color.green : color.white, str.tostring(xau_vol, "0.0") + "x", xau_vol >= vol_min ? color.green : color.white, t_size)
+    f_row(14, "VOL SURGE", f_vol_txt(btc_vol), nz(btc_vol) >= vol_min ? color.green : color.white, f_vol_txt(xau_vol), nz(xau_vol) >= vol_min ? color.green : color.white, t_size)
     f_row(15, "RS vs SPY", (btc_rs >= 0 ? "+" : "") + str.tostring(btc_rs, "0.00") + "%", btc_rs >= 0 ? color.green : color.red, (xau_rs >= 0 ? "+" : "") + str.tostring(xau_rs, "0.00") + "%", xau_rs >= 0 ? color.green : color.red, t_size)
+    f_row(16, "SIGNALS / BLOCKED BARS", f_blocked(btc_t), color.silver, f_blocked(xau_t), color.silver, t_size)
