@@ -335,6 +335,28 @@ bool chart_trig = (chart_is_btc or chart_is_xau) and tt_trig
 plotshape(chart_trig and tt.dir == 1,  "Buy Signal",  shape.triangleup,   location.belowbar, color.green, size = size.small)
 plotshape(chart_trig and tt.dir == -1, "Sell Signal", shape.triangledown, location.abovebar, color.red,   size = size.small)
 
+// ---- DEBUG: hover any candle and read these in the Data Window ----
+c_dir     = chart_is_btc ? btc_dir     : xau_dir
+c_score   = chart_is_btc ? btc_score   : xau_score
+c_signal  = chart_is_btc ? btc_signal  : xau_signal
+c_blocker = chart_is_btc ? btc_blocker : xau_blocker
+c_vol     = chart_is_btc ? btc_vol     : xau_vol
+c_rr      = chart_is_btc ? btc_rr      : xau_rr
+c_time    = chart_is_btc ? btc_time    : xau_time
+plot(trade_on ? 1 : 0,        "DBG trade_on (1=yes)",        display = display.data_window)
+plot(c_time,                  "DBG asset bar time (na=bad)", display = display.data_window)
+plot(c_dir,                   "DBG trend dir (1/-1/0)",      display = display.data_window)
+plot(c_score,                 "DBG score",                   display = display.data_window)
+plot(c_vol,                   "DBG vol surge",               display = display.data_window)
+plot(c_rr,                    "DBG R:R",                     display = display.data_window)
+plot(c_signal ? 1 : 0,        "DBG signal (1=yes)",          display = display.data_window)
+plot(c_blocker,               "DBG blocker 1cdl 2vwap 3vol 4score 5rr", display = display.data_window)
+plot(tt.state,                "DBG trade state 0-7",         display = display.data_window)
+plot(tt.signals,              "DBG signals so far",          display = display.data_window)
+plot(strategy.position_size,  "DBG position size",           display = display.data_window)
+plot(bar_index,               "DBG bar_index",               display = display.data_window)
+plot(last_bar_index,          "DBG last_bar_index",          display = display.data_window)
+
 // Chart levels for the traded asset
 bool show_lv = trade_on and tt.is_active()
 plot(show_lv ? tt.entry : na, "Entry", color.blue,  1, plot.style_linebr)
@@ -385,7 +407,7 @@ f_rr_txt(float rr, float risk_p, float rew_p) =>
 if barstate.isfirst
     table.merge_cells(dash, 0, 0, 2, 0)
 
-if (barstate.islast or barstate.islastconfirmedhistory) and show_dash
+if show_dash and bar_index >= last_bar_index - 1
     t_size = table_size == "Tiny" ? size.tiny : table_size == "Small" ? size.small : size.normal
 
     // Idle -> live levels; locked/finished trade -> locked levels
